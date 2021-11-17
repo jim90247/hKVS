@@ -37,6 +37,8 @@ set(MITSUME_SRC
 
 add_library(mitsume ${MITSUME_SRC})
 target_link_libraries(mitsume ibverbs rt Threads::Threads memcached numa papi boost_system boost_coroutine boost_thread)
+# set LTO
+set_property(TARGET mitsume PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
 
 set(CLOVER_SRC
   client.h
