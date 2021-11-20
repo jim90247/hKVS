@@ -1,4 +1,5 @@
 #include <getopt.h>
+#include <glog/logging.h>
 
 #include "clover/memcached.h"
 #include "clover/mitsume.h"
@@ -154,7 +155,56 @@ void *main_client(void *arg) {
 
   printf("finish all client setup\n");
 
-  mitsume_clt_test(client_ctx);
+  // Use thread-0 metadata
+  mitsume_consumer_metadata *thread_metadata = &client_ctx->thread_metadata[0];
+  // Following the usage in mitsume_benchmark_ycsb, where only the first 4K
+  // bytes are used. Buffer is allocated at
+  // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
+  const size_t kBufSize = 4096;
+  // Buffer for reading, pre-allocated during context initialization.
+  char *const rbuf =
+      static_cast<char *>(thread_metadata->local_inf->user_output_space[0]);
+  // Buffer for writing.
+  char *const wbuf =
+      static_cast<char *>(thread_metadata->local_inf->user_input_space[0]);
+  fill(rbuf, rbuf + kBufSize, '\0');
+  fill(wbuf, wbuf + kBufSize, '\0');
+
+  string cmd, value;
+  mitsume_key key = 123;
+  int rc = 0;
+  cout << "<open|read|write> <key> [value] $ ";
+  while (cin >> cmd) {
+    if (cmd == "open") {
+      cin >> key >> value;
+      strncpy(wbuf, value.c_str(), kBufSize);
+      rc = mitsume_tool_open(thread_metadata, key, wbuf, value.length(),
+                             MITSUME_BENCHMARK_REPLICATION);
+    } else if (cmd == "read") {
+      cin >> key;
+      uint32_t read_size = 0;
+      rc = mitsume_tool_read(thread_metadata, key, rbuf, &read_size,
+                             MITSUME_TOOL_KVSTORE_READ);
+      if (rc == MITSUME_SUCCESS) {
+        value = string(rbuf);
+      }
+    } else if (cmd == "write") {
+      cin >> key >> value;
+      strncpy(wbuf, value.c_str(), kBufSize);
+      rc = mitsume_tool_write(thread_metadata, key, wbuf, value.length(),
+                              MITSUME_TOOL_KVSTORE_WRITE);
+    }
+    if (rc == MITSUME_SUCCESS) {
+      cout << "Perform " << cmd << " on " << key << " success (value: " << value
+           << ")" << endl;
+    } else {
+      cout << "Perform " << cmd << " on " << key
+           << " failed, return code: " << rc << endl;
+    }
+    cout << "<open|read|write> <key> [value] $ ";
+  }
+
+  // mitsume_clt_test(client_ctx);
   /*
   char *test_write = new char[1024];
   char *test_read = new char[1024];
@@ -339,6 +389,7 @@ int main(int argc, char **argv) {
   if (is_client == 1) {
     assert(num_threads >= 1);
   }
+  CHECK(num_threads == 1) << "Use only one thread.";
 
   param_arr = (struct configuration_params *)malloc(
       num_threads * sizeof(struct configuration_params));
