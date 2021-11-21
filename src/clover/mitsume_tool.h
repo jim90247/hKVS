@@ -23,7 +23,7 @@
 
 #define MITSUME_TOOL_KVSTORE_READ MITSUME_TOOL_FLAG_BLOCK_UNCOMMITTED
 #define MITSUME_TOOL_KVSTORE_WRITE MITSUME_TOOL_FLAG_GC
-#define MITSUME_TOOL_MESSAGE_READ                                              \
+#define MITSUME_TOOL_MESSAGE_READ \
   MITSUME_TOOL_FLAG_GC | MITSUME_TOOL_FLAG_NONLATEST
 #define MITSUME_TOOL_MESSAGE_WRITE 0x0
 #define MITSUME_TOOL_PUBSUB_READ MITSUME_TOOL_FLAG_NONLATEST
@@ -46,6 +46,17 @@ enum MITSUME_HASHTABLE_PROCESSING_FLAG {
 
 void mitsume_tool_lru_init(void);
 
+/**
+ * @brief Insert a new key value pair.
+ *
+ * @param thread_metadata thread metadata
+ * @param key key
+ * @param write_addr address to the registered write buffer (usually one of
+ * thread_metadata->local_inf->user_input_space)
+ * @param size value size in bytes
+ * @param replication_factor replication factor
+ * @return MITSUME_SUCCESS on success
+ */
 int mitsume_tool_open(struct mitsume_consumer_metadata *thread_metadata,
                       mitsume_key key, void *write_addr, uint32_t size,
                       int replication_factor);

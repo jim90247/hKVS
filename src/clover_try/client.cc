@@ -193,36 +193,44 @@ void *main_client(void *arg) {
   };
   // max_keys_stress_test();
 
-  cout << "<open|read|write> <key> [value] $ ";
-  while (cin >> cmd) {
-    if (cmd == "open") {
-      cin >> key >> value;
-      strncpy(wbuf, value.c_str(), kBufSize);
-      rc = mitsume_tool_open(thread_metadata, key, wbuf, value.length(),
-                             MITSUME_BENCHMARK_REPLICATION);
-    } else if (cmd == "read") {
-      cin >> key;
-      uint32_t read_size = 0;
-      rc = mitsume_tool_read(thread_metadata, key, rbuf, &read_size,
-                             MITSUME_TOOL_KVSTORE_READ);
-      if (rc == MITSUME_SUCCESS) {
-        value = string(rbuf);
-      }
-    } else if (cmd == "write") {
-      cin >> key >> value;
-      strncpy(wbuf, value.c_str(), kBufSize);
-      rc = mitsume_tool_write(thread_metadata, key, wbuf, value.length(),
-                              MITSUME_TOOL_KVSTORE_WRITE);
-    }
-    if (rc == MITSUME_SUCCESS) {
-      cout << "Perform " << cmd << " on " << key << " success (value: " << value
-           << ")" << endl;
-    } else {
-      cout << "Perform " << cmd << " on " << key
-           << " failed, return code: " << rc << endl;
-    }
+  /**
+   * @brief An interactive interface to receive and process operations from
+   * command line input.
+   */
+  auto interactive_cmd = [&]() {
     cout << "<open|read|write> <key> [value] $ ";
-  }
+    while (cin >> cmd) {
+      if (cmd == "open") {
+        cin >> key >> value;
+        strncpy(wbuf, value.c_str(), kBufSize);
+        rc = mitsume_tool_open(thread_metadata, key, wbuf, value.length(),
+                               MITSUME_BENCHMARK_REPLICATION);
+      } else if (cmd == "read") {
+        cin >> key;
+        uint32_t read_size = 0;
+        rc = mitsume_tool_read(thread_metadata, key, rbuf, &read_size,
+                               MITSUME_TOOL_KVSTORE_READ);
+        if (rc == MITSUME_SUCCESS) {
+          value = string(rbuf);
+        }
+      } else if (cmd == "write") {
+        cin >> key >> value;
+        strncpy(wbuf, value.c_str(), kBufSize);
+        rc = mitsume_tool_write(thread_metadata, key, wbuf, value.length(),
+                                MITSUME_TOOL_KVSTORE_WRITE);
+      }
+      if (rc == MITSUME_SUCCESS) {
+        cout << "Perform " << cmd << " on " << key
+             << " success (value: " << value << ")" << endl;
+      } else {
+        cout << "Perform " << cmd << " on " << key
+             << " failed, return code: " << rc << endl;
+      }
+      cout << "<open|read|write> <key> [value] $ ";
+    }
+    cout << endl;
+  };
+  interactive_cmd();
 
   // mitsume_clt_test(client_ctx);
   /*
@@ -306,7 +314,6 @@ void *run_client(void *arg) {
   return NULL;
 }
 
-// dummy code to test build
 int main(int argc, char **argv) {
   int i, c;
   int is_master = -1;
