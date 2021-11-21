@@ -173,6 +173,26 @@ void *main_client(void *arg) {
   string cmd, value;
   mitsume_key key = 123;
   int rc = 0;
+
+  /**
+   * @brief A stress test to find out the maximum of keys. Using default values,
+   * this function halts at 335359 keys. This number is the amount of 128 byte
+   * slots in slab allocator, which can be found in the terminal output of
+   * metadata server during initialization.
+   */
+  auto max_keys_stress_test = [&]() {
+    key = 0;
+    while (rc == 0) {
+      LOG_EVERY_N(INFO, 100000) << "opening key " << key;
+      snprintf(wbuf, kBufSize, "key_%lu", key);
+      rc =
+          mitsume_tool_open(thread_metadata, key, wbuf, strnlen(wbuf, kBufSize),
+                            MITSUME_BENCHMARK_REPLICATION);
+      key++;
+    }
+  };
+  // max_keys_stress_test();
+
   cout << "<open|read|write> <key> [value] $ ";
   while (cin >> cmd) {
     if (cmd == "open") {
