@@ -55,7 +55,3 @@ struct herd_thread_params {
   int update_percentage;
   int postlist;
 };
-
-void* run_master(void* arg);
-void* run_worker(void* arg);
-void* run_client(void* arg);
