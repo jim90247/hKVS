@@ -7,3 +7,5 @@ add_subdirectory(herd)
 
 add_subdirectory(clover)
 add_subdirectory(clover_try)
+
+add_subdirectory(combined)
