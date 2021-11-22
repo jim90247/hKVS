@@ -4,11 +4,11 @@
 
 void* run_worker(void* arg) {
   int i, ret;
-  struct thread_params params = *(struct thread_params*)arg;
-  int wrkr_lid = params.id; /* Local ID of this worker thread*/
-  int num_server_ports = params.num_server_ports;
-  int base_port_index = params.base_port_index;
-  int postlist = params.postlist;
+  herd_thread_params herd_params = *static_cast<herd_thread_params*>(arg);
+  int wrkr_lid = herd_params.id; /* Local ID of this worker thread*/
+  int num_server_ports = herd_params.num_server_ports;
+  int base_port_index = herd_params.base_port_index;
+  int postlist = herd_params.postlist;
 
   /*
    * MICA-related checks. Note that @postlist is the largest batch size we
@@ -22,36 +22,36 @@ void* run_worker(void* arg) {
   assert(postlist <= NUM_CLIENTS); /* Static sizing of arrays below */
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
-  struct mica_kv kv;
+  mica_kv kv;
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
   mica_populate_fixed_len(&kv, HERD_NUM_KEYS, HERD_VALUE_SIZE);
 
   assert(num_server_ports < MAX_SERVER_PORTS); /* Avoid dynamic alloc */
-  struct hrd_ctrl_blk* cb[MAX_SERVER_PORTS];
+  hrd_ctrl_blk* cb[MAX_SERVER_PORTS];
 
   // Create queue pairs for SEND responses for each server ports
   for (i = 0; i < num_server_ports; i++) {
     int ib_port_index = base_port_index + i;
 
-    cb[i] = hrd_ctrl_blk_init(wrkr_lid,          /* local_hid */
-                              ib_port_index, -1, /* port index, numa node */
-                              0, 0,              /* #conn qps, uc */
-                              NULL, 0, -1, /*prealloc conn buf, buf size, key */
-                              NUM_UD_QPS, 4096,
-                              -1); /* num_dgram_qps, dgram_buf_size, key */
+    cb[i] = hrd_ctrl_blk_init(
+        wrkr_lid,              /* local_hid */
+        ib_port_index, -1,     /* port index, numa node */
+        0, 0,                  /* #conn qps, uc */
+        nullptr, 0, -1,        /*prealloc conn buf, buf size, key */
+        NUM_UD_QPS, 4096, -1); /* num_dgram_qps, dgram_buf_size, key */
   }
 
   /* Map the request region created by the master */
-  volatile struct mica_op* req_buf;
+  volatile mica_op* req_buf;
   int sid = shmget(MASTER_SHM_KEY, RR_SIZE, SHM_HUGETLB | 0666);
   assert(sid != -1);
   req_buf = static_cast<volatile mica_op*>(shmat(sid, 0, 0));
   assert(req_buf != (void*)-1);
 
   /* Create an address handle for each client */
-  struct ibv_ah* ah[NUM_CLIENTS];
+  ibv_ah* ah[NUM_CLIENTS];
   memset(ah, 0, NUM_CLIENTS * sizeof(uintptr_t));
-  struct hrd_qp_attr* clt_qp[NUM_CLIENTS];
+  hrd_qp_attr* clt_qp[NUM_CLIENTS];
 
   for (i = 0; i < NUM_CLIENTS; i++) {
     /* Compute the control block and physical port index for client @i */
@@ -62,10 +62,10 @@ void* run_worker(void* arg) {
     sprintf(clt_name, "client-dgram-%d", i);
 
     /* Get the UD queue pair for the ith client */
-    clt_qp[i] = NULL;
-    while (clt_qp[i] == NULL) {
+    clt_qp[i] = nullptr;
+    while (clt_qp[i] == nullptr) {
       clt_qp[i] = hrd_get_published_qp(clt_name);
-      if (clt_qp[i] == NULL) {
+      if (clt_qp[i] == nullptr) {
         usleep(200000);
       }
     }
@@ -73,7 +73,7 @@ void* run_worker(void* arg) {
     printf("main: Worker %d found client %d of %d clients. Client LID: %d\n",
            wrkr_lid, i, NUM_CLIENTS, clt_qp[i]->lid);
 
-    struct ibv_ah_attr ah_attr = {
+    ibv_ah_attr ah_attr = {
         .dlid = clt_qp[i]->lid,
         .sl = 0,
         .src_path_bits = 0,
@@ -83,24 +83,24 @@ void* run_worker(void* arg) {
     };
 
     ah[i] = ibv_create_ah(cb[cb_i]->pd, &ah_attr);
-    assert(ah[i] != NULL);
+    assert(ah[i] != nullptr);
   }
 
   int ws[NUM_CLIENTS] = {0}; /* Per-client window slot */
 
   /* We can detect at most NUM_CLIENTS requests in each step */
-  struct mica_op* op_ptr_arr[NUM_CLIENTS];
-  struct mica_resp resp_arr[NUM_CLIENTS];
-  struct ibv_send_wr wr[NUM_CLIENTS], *bad_send_wr = NULL;
-  struct ibv_sge sgl[NUM_CLIENTS];
+  mica_op* op_ptr_arr[NUM_CLIENTS];
+  mica_resp resp_arr[NUM_CLIENTS];
+  ibv_send_wr wr[NUM_CLIENTS], *bad_send_wr = nullptr;
+  ibv_sge sgl[NUM_CLIENTS];
 
   /* If postlist is disabled, remember the cb to send() each @wr from */
   int cb_for_wr[NUM_CLIENTS];
 
   /* If postlist is enabled, we instead create per-cb linked lists of wr's */
-  struct ibv_send_wr* first_send_wr[MAX_SERVER_PORTS] = {NULL};
-  struct ibv_send_wr* last_send_wr[MAX_SERVER_PORTS] = {NULL};
-  struct ibv_wc wc;
+  ibv_send_wr* first_send_wr[MAX_SERVER_PORTS] = {nullptr};
+  ibv_send_wr* last_send_wr[MAX_SERVER_PORTS] = {nullptr};
+  ibv_wc wc;
   long long rolling_iter = 0; /* For throughput measurement */
   long long nb_tx[MAX_SERVER_PORTS][NUM_UD_QPS] = {{0}}; /* CQE polling */
   int ud_qp_i = 0; /* UD QP index: same for both ports */
@@ -125,7 +125,7 @@ void* run_worker(void* arg) {
   int poll_i, wr_i;
   assert(NUM_CLIENTS % num_server_ports == 0);
 
-  struct timespec start, end;
+  timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
 
   while (1) {
@@ -180,7 +180,7 @@ void* run_worker(void* arg) {
       // assert(req_buf[req_offset].opcode == MICA_OP_GET ||	/* XXX */
       //		req_buf[req_offset].opcode == MICA_OP_PUT);
 
-      op_ptr_arr[wr_i] = (struct mica_op*)&req_buf[req_offset];
+      op_ptr_arr[wr_i] = const_cast<mica_op*>(&req_buf[req_offset]);
 
       if (USE_POSTLIST == 1) {
         /* Add the SEND response for this client to the postlist */
@@ -192,7 +192,7 @@ void* run_worker(void* arg) {
           last_send_wr[cb_i] = &wr[wr_i];
         }
       } else {
-        wr[wr_i].next = NULL;
+        wr[wr_i].next = nullptr;
         cb_for_wr[wr_i] = cb_i;
       }
 
@@ -239,7 +239,7 @@ void* run_worker(void* arg) {
     int nb_new_req_tot = wr_i;
     for (wr_i = 0; wr_i < nb_new_req_tot; wr_i++) {
       sgl[wr_i].length = resp_arr[wr_i].val_len;
-      sgl[wr_i].addr = (uint64_t)(uintptr_t)resp_arr[wr_i].val_ptr;
+      sgl[wr_i].addr = reinterpret_cast<uintptr_t>(resp_arr[wr_i].val_ptr);
 
       if (USE_POSTLIST == 0) {
         ret = ibv_post_send(cb[cb_for_wr[wr_i]]->dgram_qp[ud_qp_i], &wr[wr_i],
@@ -256,7 +256,7 @@ void* run_worker(void* arg) {
 
       /* If postlist is off, we should post replies in the loop above */
       if (USE_POSTLIST == 1) {
-        last_send_wr[i]->next = NULL;
+        last_send_wr[i]->next = nullptr;
         ret = ibv_post_send(cb[i]->dgram_qp[ud_qp_i], first_send_wr[i],
                             &bad_send_wr);
         CPE(ret, "ibv_post_send error", ret);
@@ -268,5 +268,5 @@ void* run_worker(void* arg) {
     HRD_MOD_ADD(ud_qp_i, NUM_UD_QPS);
   }
 
-  return NULL;
+  return nullptr;
 }
