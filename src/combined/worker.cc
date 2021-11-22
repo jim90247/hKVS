@@ -1,3 +1,5 @@
+#include <getopt.h>
+
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
@@ -269,4 +271,81 @@ void* run_worker(void* arg) {
   }
 
   return nullptr;
+}
+
+int main(int argc, char* argv[]) {
+  /* Use small queues to reduce cache pressure */
+  assert(HRD_Q_DEPTH == 128);
+
+  /* All requests should fit into the master's request region */
+  assert(sizeof(struct mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+         RR_SIZE);
+
+  /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
+  assert(UNSIG_BATCH >= WINDOW_SIZE);     /* Pipelining check for clients */
+  assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
+
+  int i, c;
+  int postlist = -1, update_percentage = -1;
+  int base_port_index = -1, num_server_ports = -1, num_client_ports = -1;
+  herd_thread_params* param_arr;
+  pthread_t* thread_arr;
+
+  static struct option opts[] = {
+      {.name = "base-port-index", .has_arg = 1, .val = 'b'},
+      {.name = "num-server-ports", .has_arg = 1, .val = 'N'},
+      {.name = "num-client-ports", .has_arg = 1, .val = 'n'},
+      {.name = "postlist", .has_arg = 1, .val = 'p'},
+      {0}};
+
+  /* Parse and check arguments */
+  while (1) {
+    c = getopt_long(argc, argv, "b:N:n:p", opts, nullptr);
+    if (c == -1) {
+      break;
+    }
+    switch (c) {
+      case 'b':
+        base_port_index = atoi(optarg);
+        break;
+      case 'N':
+        num_server_ports = atoi(optarg);
+        break;
+      case 'n':
+        num_client_ports = atoi(optarg);
+        break;
+      case 'p':
+        postlist = atoi(optarg);
+        break;
+      default:
+        printf("Invalid argument %d\n", c);
+        assert(false);
+    }
+  }
+
+  /* Common checks for all (master, workers, clients */
+  assert(base_port_index >= 0 && base_port_index <= 8);
+  assert(num_server_ports >= 1 && num_server_ports <= 8);
+
+  assert(postlist >= 1);
+
+  /* Launch a single server thread or multiple client threads */
+  printf("main: Using %d threads\n", NUM_WORKERS);
+  param_arr = new herd_thread_params[NUM_WORKERS];
+  thread_arr = new pthread_t[NUM_WORKERS];
+
+  for (i = 0; i < NUM_WORKERS; i++) {
+    param_arr[i].postlist = postlist;
+    param_arr[i].id = i;
+    param_arr[i].base_port_index = base_port_index;
+    param_arr[i].num_server_ports = num_server_ports;
+    param_arr[i].num_client_ports = num_client_ports;
+    pthread_create(&thread_arr[i], nullptr, run_worker, &param_arr[i]);
+  }
+
+  for (i = 0; i < NUM_WORKERS; i++) {
+    pthread_join(thread_arr[i], nullptr);
+  }
+
+  return 0;
 }
