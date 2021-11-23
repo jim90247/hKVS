@@ -83,5 +83,17 @@ uint128 CityHash128(const char *s, size_t len);
 // hashed into the result.
 uint128 CityHash128WithSeed(const char *s, size_t len, uint128 seed);
 
+/**
+ * @brief A hash function for a byte array.
+ *
+ * Produces a 128 bit hash but only higher 64 bits contains data, and lower 64
+ * bits are 0.
+ *
+ * @param buf the byte array
+ * @param len the length of the byte array
+ * @return the 128 bit hash value
+ */
+uint128 CityHash128_High64(const char *buf, size_t len);
+
 #endif  // CITY_HASH_H_
 
