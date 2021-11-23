@@ -10,7 +10,7 @@ function abort_exec() {
     exit 1
 }
 
-bindir="$(readlink -f "$(dirname "$0")/../bin")"
+bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
 export HRD_REGISTRY_IP="192.168.223.1"
 export MLX5_SINGLE_THREADED=1
