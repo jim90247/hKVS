@@ -188,6 +188,37 @@ mitsume_ctx_clt *SetupClover(configuration_params *params) {
   return client_ctx;
 }
 
+void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata) {
+  // TODO: insert HERD keys into Clover
+  /* NOTE: although each herd client uses same set of keys (0~HERD_NUM_KEYS-1),
+   * they should be treated as different keys when inserting them into Clover.
+   *
+   * A possible workaround is to mask out some hash bits and use those fields to
+   * store thread id. For example:
+   *
+   * mitsume_key ConvertHerdKeyToCloverKey(mica_key *key, uint8_t tid) {
+   *   mitsume_key key = reinterpret_cast<uint64 *>(key)[1];
+   *   return (key << 8 | tid);
+   * }
+   */
+
+  /* NOTE: the max key storage in Clover is likely not large enough to
+   * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.
+   *
+   * A possible workaround to fit them into Clover that also mimic the read-most
+   * workload:
+   * Let the first K keys be *popular* keys which has higher access rate.
+   * Pre-configure 'K' so that (NUM_WORKER * K) would not exceed the max amount
+   * of keys Clover can accommodate, and only offload the first K keys.
+   *
+   * Future works are required to make this more generic:
+   * 1. Determine popular keys based on statistics collected at worker side.
+   * 2. Remove non-popular keys from Clover. This would require Clover to
+   * support 'delete' operation.
+   */
+  RAW_LOG_FATAL("function not implemented yet.");
+}
+
 void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   int i, ret;
   int wrkr_lid = herd_params.id; /* Local ID of this worker thread*/
@@ -439,7 +470,7 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
       if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
         // the second 8 bytes of mica_key.
-        mitsume_key key = reinterpret_cast<uint64 *>(op_ptr_arr[i])[1];
+        mitsume_key key = reinterpret_cast<uint64 *>(&op_ptr_arr[i]->key)[1];
         memcpy(clover_wbuf, op_ptr_arr[i]->value, op_ptr_arr[i]->val_len);
         clover_rc = mitsume_tool_write(clover_thread_metadata, key, clover_wbuf,
                                        op_ptr_arr[i]->val_len,
