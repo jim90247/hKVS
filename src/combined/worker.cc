@@ -195,6 +195,22 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   int base_port_index = herd_params.base_port_index;
   int postlist = herd_params.postlist;
 
+  // Use HERD local id as Clover thread id
+  mitsume_consumer_metadata *clover_thread_metadata =
+      &clover_ctx->thread_metadata[herd_params.id];
+  // Following the usage in mitsume_benchmark_ycsb, where only the first 4K
+  // bytes are used. Buffer is allocated at
+  // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
+  const size_t kBufSize = 4096;
+  // Buffer for reading, pre-allocated during context initialization.
+  char *const clover_rbuf = static_cast<char *>(
+      clover_thread_metadata->local_inf->user_output_space[0]);
+  // Buffer for writing.
+  char *const clover_wbuf = static_cast<char *>(
+      clover_thread_metadata->local_inf->user_input_space[0]);
+  fill(clover_rbuf, clover_rbuf + kBufSize, '\0');
+  fill(clover_wbuf, clover_wbuf + kBufSize, '\0');
+
   /*
    * MICA-related checks. Note that @postlist is the largest batch size we
    * feed into MICA. The average postlist per port in a dual-port NIC should
@@ -418,6 +434,22 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
 
     // We may insert mirroring/invalidation operations (Clover compute node)
     // here.
+    int clover_rc = 0;
+    for (int i = 0; i < wr_i; i++) {
+      if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
+        // We've modified HERD to use 64-bit hash and place the hash result in
+        // the second 8 bytes of mica_key.
+        mitsume_key key = reinterpret_cast<uint64 *>(op_ptr_arr[i])[1];
+        memcpy(clover_wbuf, op_ptr_arr[i]->value, op_ptr_arr[i]->val_len);
+        clover_rc = mitsume_tool_write(clover_thread_metadata, key, clover_wbuf,
+                                       op_ptr_arr[i]->val_len,
+                                       MITSUME_TOOL_KVSTORE_WRITE);
+        if (clover_rc) {
+          RAW_LOG_FATAL("Clover write key %lx failed (return code = %d)", key,
+                        clover_rc);
+        }
+      }
+    }
 
     /*
      * Fill in the computed @val_ptr's. For non-postlist mode, this loop
