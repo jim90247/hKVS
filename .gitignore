@@ -35,3 +35,5 @@ bin/
 build/
 
 .vscode/
+
+src/herd/main
