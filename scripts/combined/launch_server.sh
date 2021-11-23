@@ -36,7 +36,7 @@ done
 
 show_message "Reset server QP registry"
 sudo pkill memcached
-memcached -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
+memcached -u root -I 128m -m 2048 -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
 sleep 1
 
 show_message "Starting master process"
@@ -54,5 +54,11 @@ show_message "Starting worker threads"
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
     stdbuf --output=L \
     numactl --cpunodebind=0 --membind=0 "${bindir}/combined_worker" \
-    --base_port_index 0 \
-    --postlist 16 | tee "$worker_log" &
+    --herd_base_port_index 0 \
+    --postlist 16 \
+    --clover_machine_id 1 \
+    --clover_ib_dev 1 \
+    --clover_ib_port 1 \
+    --clover_cn 1 \
+    --clover_dn 1 \
+    --clover_memcached_ip "$HRD_REGISTRY_IP" | tee "$worker_log" &

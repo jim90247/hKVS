@@ -44,7 +44,7 @@ constexpr int UNSIG_BATCH_ = UNSIG_BATCH - 1;
 /* SHM key for the 1st request region created by master. ++ for other RRs.*/
 constexpr int MASTER_SHM_KEY = 24;
 constexpr int RR_SIZE = 16 * 1024 * 1024; /* Request region size */
-constexpr int OFFSET(int wn, int cn, int ws) {
+constexpr int Offset(int wn, int cn, int ws) {
   return (wn * NUM_CLIENTS * WINDOW_SIZE) + (cn * WINDOW_SIZE) + ws;
 }
 struct herd_thread_params {
