@@ -112,8 +112,7 @@ int client_get_shortcut(struct mitsume_ctx_clt *client_ctx) {
   return MITSUME_SUCCESS;
 }
 
-int client_setup_post_recv(struct configuration_params *input_arg,
-                           struct mitsume_ctx_clt *context) {
+int client_setup_post_recv(mitsume_ctx_clt *context) {
   void *alloc_space;
   ptr_attr *tmp_attr_ptr;
   int per_msg;
@@ -174,7 +173,7 @@ mitsume_ctx_clt *SetupClover(configuration_params *params) {
   mitsume_ctx_clt *client_ctx;
   client_ctx = InitCloverCnContext(params);
 
-  RAW_CHECK(client_setup_post_recv(params, client_ctx) == 0,
+  RAW_CHECK(client_setup_post_recv(client_ctx) == 0,
             "Failed to setup post_recv");
   RAW_CHECK(client_get_shortcut(client_ctx) == 0,
             "Failed to get correct shortcut");
@@ -260,12 +259,12 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
            wrkr_lid, i, NUM_CLIENTS, clt_qp[i]->lid);
 
     ibv_ah_attr ah_attr = {
-        .dlid = clt_qp[i]->lid,
+        .dlid = static_cast<uint16_t>(clt_qp[i]->lid),
         .sl = 0,
         .src_path_bits = 0,
         .is_global = 0,
         /* port_num (> 1): device-local port for responses to this client */
-        .port_num = local_port_i + 1,
+        .port_num = static_cast<uint8_t>(local_port_i + 1),
     };
 
     ah[i] = ibv_create_ah(cb[cb_i]->pd, &ah_attr);
@@ -490,6 +489,7 @@ int main(int argc, char *argv[]) {
       .num_servers = MITSUME_CON_NUM,
       .num_clients = FLAGS_clover_cn,
       .num_memorys = FLAGS_clover_dn,
+      .is_master = -1,  // dummy value
       .machine_id = FLAGS_clover_machine_id,
       // one clover CN thread for each HERD worker
       .total_threads = NUM_WORKERS,
