@@ -61,4 +61,4 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
     --clover_ib_port 1 \
     --clover_cn 1 \
     --clover_dn 1 \
-    --clover_memcached_ip "$HRD_REGISTRY_IP" | tee "$worker_log" &
+    --clover_memcached_ip "$HRD_REGISTRY_IP" 2>&1 | tee "$worker_log" &
