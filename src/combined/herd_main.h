@@ -55,3 +55,41 @@ struct herd_thread_params {
   int update_percentage;
   int postlist;
 };
+
+/* NOTE: the max key storage in Clover is likely not large enough to
+ * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.
+ *
+ * A possible workaround to fit them into Clover that also mimic the read-most
+ * workload:
+ * Let the first K keys be *popular* keys which has higher access rate.
+ * Pre-configure 'K' so that (NUM_WORKER * K) would not exceed the max amount
+ * of keys Clover can accommodate, and only offload the first K keys.
+ *
+ * Future works are required to make this more generic:
+ * 1. Determine popular keys based on statistics collected at worker side.
+ * 2. Remove non-popular keys from Clover. This would require Clover to
+ * support 'delete' operation.
+ */
+// The number of popular keys to offload to secondary KVS (Clover) for each HERD
+// worker thread
+constexpr int kKeysToOffloadPerWorker = 10000;
+
+/* NOTE: although each herd client uses same set of keys (0~HERD_NUM_KEYS-1),
+ * they should be treated as different keys when inserting them into Clover.
+ *
+ * A possible workaround is to mask out some hash bits and use those fields to
+ * store thread id.
+ */
+/**
+ * @brief Converts HERD key hash of specific worker thread to the key used in
+ * Clover by replacing the lowest 8 bits with the worker thread id.
+ *
+ * @param herd_key the key used in HERD
+ * @param tid the id of HERD worke thread
+ * @return the corresponding key to query in Clover
+ */
+inline mitsume_key ConvertHerdKeyToCloverKey(mica_key *herd_key, uint8_t tid) {
+  mitsume_key clover_key = reinterpret_cast<uint64 *>(herd_key)[1];
+  clover_key &= ~((1UL << 8) - 1UL);  // mask out lowest 8 bits
+  return (clover_key | tid);
+}

@@ -3,7 +3,10 @@
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "clover/mitsume.h"
@@ -12,6 +15,9 @@
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
+
+// The type of secondary KVS lookup table
+using CloverLookupTable = std::unordered_set<mitsume_key>;
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 // Base port index of HERD: the i-th available IB port (start from 0)
@@ -188,35 +194,82 @@ mitsume_ctx_clt *SetupClover(configuration_params *params) {
   return client_ctx;
 }
 
-void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata) {
-  // TODO: insert HERD keys into Clover
-  /* NOTE: although each herd client uses same set of keys (0~HERD_NUM_KEYS-1),
-   * they should be treated as different keys when inserting them into Clover.
-   *
-   * A possible workaround is to mask out some hash bits and use those fields to
-   * store thread id. For example:
-   *
-   * mitsume_key ConvertHerdKeyToCloverKey(mica_key *key, uint8_t tid) {
-   *   mitsume_key key = reinterpret_cast<uint64 *>(key)[1];
-   *   return (key << 8 | tid);
-   * }
-   */
+/**
+ * @brief Copies frequently accessed KV pairs in MICA to Clover data node.
+ *
+ * @param[in] clover_thread_metadata the metadata of the corresponding worker
+ * thread
+ * @param[in] worker_id the worker thread id which will be used for tagging MICA
+ * keys to differentiate keys from different worker threads
+ * @param[in] kv MICA KV store
+ * @param[out] lookup_table the lookup table storing what keys are in Clover
+ */
+void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata,
+                      int worker_id, mica_kv *kv,
+                      CloverLookupTable &lookup_table) {
+  // Follow the usage in mitsume_benchmark_ycsb, where only the first 4K bytes
+  // are used. Buffer is allocated at
+  // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
+  const size_t kBufSize = 4096;
+  // Buffer for reading, pre-allocated during context initialization.
+  char *const clover_rbuf = static_cast<char *>(
+      clover_thread_metadata->local_inf->user_output_space[0]);
+  // Buffer for writing.
+  char *const clover_wbuf = static_cast<char *>(
+      clover_thread_metadata->local_inf->user_input_space[0]);
+  fill(clover_rbuf, clover_rbuf + kBufSize, '\0');
+  fill(clover_wbuf, clover_wbuf + kBufSize, '\0');
 
-  /* NOTE: the max key storage in Clover is likely not large enough to
-   * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.
-   *
-   * A possible workaround to fit them into Clover that also mimic the read-most
-   * workload:
-   * Let the first K keys be *popular* keys which has higher access rate.
-   * Pre-configure 'K' so that (NUM_WORKER * K) would not exceed the max amount
-   * of keys Clover can accommodate, and only offload the first K keys.
-   *
-   * Future works are required to make this more generic:
-   * 1. Determine popular keys based on statistics collected at worker side.
-   * 2. Remove non-popular keys from Clover. This would require Clover to
-   * support 'delete' operation.
-   */
-  RAW_LOG_FATAL("function not implemented yet.");
+  mica_key *mica_keys =
+      reinterpret_cast<mica_key *>(mica_gen_keys(kKeysToOffloadPerWorker));
+  mica_op **read_requests_ptr = new mica_op *[kKeysToOffloadPerWorker];
+  mica_resp *read_results = new mica_resp[kKeysToOffloadPerWorker]();
+
+  RAW_DLOG(INFO, "Worker %d start inserting %d keys into Clover.", worker_id,
+           kKeysToOffloadPerWorker);
+
+  for (size_t i = 0; i < kKeysToOffloadPerWorker; i++) {
+    read_requests_ptr[i] = new mica_op{.key = mica_keys[i],
+                                       .opcode = MICA_OP_GET,
+                                       // don't care for GET requests
+                                       .val_len = 0,
+                                       .value = {0}};
+  }
+  for (int i = 0; i < kKeysToOffloadPerWorker; i += MICA_MAX_BATCH_SIZE) {
+    int batch_size = std::min(kKeysToOffloadPerWorker - i, MICA_MAX_BATCH_SIZE);
+    mica_batch_op(kv, batch_size, read_requests_ptr + i, read_results + i);
+  }
+  for (int i = 0; i < kKeysToOffloadPerWorker; i++) {
+    if (read_results[i].type == MICA_RESP_GET_FAIL) {
+      // Perhaps these keys were evicted
+      RAW_DLOG(WARNING, "Skipping key %d (%lx): not found in MICA", i,
+               ((uint64_t *)&read_requests_ptr[i]->key)[1]);
+      continue;
+    }
+    mitsume_key clover_key =
+        ConvertHerdKeyToCloverKey(mica_keys + i, worker_id);
+    memcpy(clover_wbuf, read_results[i].val_ptr, read_results[i].val_len);
+    int rc = mitsume_tool_open(clover_thread_metadata, clover_key, clover_wbuf,
+                               read_results[i].val_len,
+                               MITSUME_NUM_REPLICATION_BUCKET);
+    if (rc) {
+      RAW_LOG(FATAL,
+              "Failed to insert %d-th key (%lx) to Clover (return code = %d)",
+              i, clover_key, rc);
+    }
+    lookup_table.insert(clover_key);
+  }
+
+  // Clean-up buffers
+  free(mica_keys);
+  for (size_t i = 0; i < kKeysToOffloadPerWorker; i++) {
+    delete read_requests_ptr[i];
+  }
+  delete[] read_requests_ptr;
+  delete[] read_results;
+
+  RAW_LOG(INFO, "Worker %d finish inserting %d keys into Clover.", worker_id,
+          kKeysToOffloadPerWorker);
 }
 
 void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
@@ -257,6 +310,8 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   mica_kv kv;
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
   mica_populate_fixed_len(&kv, HERD_NUM_KEYS, HERD_VALUE_SIZE);
+  CloverLookupTable clover_lookup_table;
+  PopulateDataNode(clover_thread_metadata, wrkr_lid, &kv, clover_lookup_table);
 
   assert(num_server_ports < MAX_SERVER_PORTS); /* Avoid dynamic alloc */
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
@@ -340,6 +395,8 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   int ud_qp_i = 0; /* UD QP index: same for both ports */
   long long nb_tx_tot = 0;
   long long nb_post_send = 0;
+  // Clover operation counter for measuring performance
+  long num_clover_updates = 0;
 
   /*
    * @cb_i is the control block to use for @clt_i's response. If NUM_CLIENTS
@@ -365,17 +422,19 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   while (1) {
     if (unlikely(rolling_iter >= M_4)) {
       clock_gettime(CLOCK_REALTIME, &end);
-      double seconds = (end.tv_sec - start.tv_sec) +
-                       (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
+      double seconds =
+          (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
       printf(
           "main: Worker %d: %.2f IOPS. Avg per-port postlist = %.2f. "
-          "HERD lookup fail rate = %.4f\n",
+          "HERD lookup fail rate = %.4f, Clover updates = %.2f/sec\n",
           wrkr_lid, M_4 / seconds, (double)nb_tx_tot / nb_post_send,
-          (double)kv.num_get_fail / kv.num_get_op);
+          (double)kv.num_get_fail / kv.num_get_op,
+          num_clover_updates / seconds);
 
       rolling_iter = 0;
       nb_tx_tot = 0;
       nb_post_send = 0;
+      num_clover_updates = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -465,20 +524,22 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
 
     // We may insert mirroring/invalidation operations (Clover compute node)
     // here.
-    int clover_rc = 0;
     for (int i = 0; i < wr_i; i++) {
       if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
         // the second 8 bytes of mica_key.
         mitsume_key key = reinterpret_cast<uint64 *>(&op_ptr_arr[i]->key)[1];
-        memcpy(clover_wbuf, op_ptr_arr[i]->value, op_ptr_arr[i]->val_len);
-        clover_rc = mitsume_tool_write(clover_thread_metadata, key, clover_wbuf,
-                                       op_ptr_arr[i]->val_len,
-                                       MITSUME_TOOL_KVSTORE_WRITE);
-        if (clover_rc) {
-          RAW_LOG_FATAL("Clover write key %lx failed (return code = %d)", key,
-                        clover_rc);
+        if (clover_lookup_table.find(key) == clover_lookup_table.end()) {
+          continue;
         }
+        memcpy(clover_wbuf, op_ptr_arr[i]->value, op_ptr_arr[i]->val_len);
+        int rc = mitsume_tool_write(clover_thread_metadata, key, clover_wbuf,
+                                    op_ptr_arr[i]->val_len,
+                                    MITSUME_TOOL_KVSTORE_WRITE);
+        if (rc) {
+          RAW_LOG_FATAL("Clover write failed: key=%lx, code=%d", key, rc);
+        }
+        num_clover_updates++;
       }
     }
 
