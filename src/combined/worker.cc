@@ -8,6 +8,7 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+#include <mutex>
 
 #include "clover/mitsume.h"
 #include "clover/mitsume_clt_test.h"
@@ -203,10 +204,15 @@ mitsume_ctx_clt *SetupClover(configuration_params *params) {
  * keys to differentiate keys from different worker threads
  * @param[in] kv MICA KV store
  * @param[out] lookup_table the lookup table storing what keys are in Clover
+ * @note Concurrent calls to this function will be serialized
  */
 void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata,
                       int worker_id, mica_kv *kv,
                       CloverLookupTable &lookup_table) {
+  static std::mutex mutex;
+  // Ensure this function is executed by only one thread at a time
+  const std::lock_guard<std::mutex> lock(mutex);
+
   // Follow the usage in mitsume_benchmark_ycsb, where only the first 4K bytes
   // are used. Buffer is allocated at
   // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
