@@ -1,6 +1,7 @@
 #include <cstdint>
 
 #include "mica/mica.h"
+#include "clover/mitsume_struct.h"
 
 /*
  * The polling logic in HERD requires the following:

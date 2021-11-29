@@ -51,9 +51,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#include "common.h"
+
 typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
+EXTERN_C
 
 typedef struct _uint128 uint128;
 struct _uint128 {
@@ -94,6 +98,8 @@ uint128 CityHash128WithSeed(const char *s, size_t len, uint128 seed);
  * @return the 128 bit hash value
  */
 uint128 CityHash128_High64(const char *buf, size_t len);
+
+EXTERN_C_END
 
 #endif  // CITY_HASH_H_
 
