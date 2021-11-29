@@ -1,9 +1,13 @@
 #!/bin/bash
-# A function to echo in blue color
-function blue() {
-	es=$(tput setaf 4)
-	ee=$(tput sgr0)
-	echo "${es}$1${ee}"
+
+function show_message() {
+	echo "$(date +%Y-%m-%dT%H:%M:%S)|" "$@"
+}
+
+function abort_exec() {
+	reason=$*
+	show_message "ERROR:" "${reason}"
+	exit 1
 }
 
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
@@ -12,25 +16,14 @@ export HRD_REGISTRY_IP="192.168.223.1"
 export MLX5_SINGLE_THREADED=1
 export MLX4_SINGLE_THREADED=1
 
-if [ "$#" -ne 1 ]; then
-    blue "Illegal number of parameters"
-	blue "Usage: ./run-machine.sh <machine_number>"
-	exit
-fi
+[ "$#" -eq 1 ] || abort_exec "Illegal number of parameters."
 
-blue "Removing hugepages"
-shm-rm.sh 1>/dev/null 2>/dev/null
-
-num_threads=16		# Threads per client machine
-
-blue "Running $num_threads client threads"
+num_threads=16 # Threads per client machine
+show_message "Running $num_threads client threads"
 
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
-	--num-threads $num_threads \
-	--base-port-index 0 \
-	--num-server-ports 1 \
-	--num-client-ports 1 \
-	--is-client 1 \
-	--update-percentage 5 \
-	--machine-id $1
+	--herd_base_port_index 0 \
+	--threads $num_threads \
+	--update_percentage 5 \
+	--herd_machine_id "$1"

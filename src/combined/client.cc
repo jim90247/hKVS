@@ -1,52 +1,58 @@
 #include <getopt.h>
+#include <gflags/gflags.h>
+#include <glog/logging.h>
+#include <glog/raw_logging.h>
+
+#include <numeric>
+#include <thread>
+#include <vector>
 
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
 
-#define DGRAM_BUF_SIZE 4096
+constexpr int DGRAM_BUF_SIZE = 4096;
 
-/* Generate a random permutation of [0, n - 1] for client @clt_gid */
-int* get_random_permutation(int n, int clt_gid, uint64_t* seed) {
-  int i, j, temp;
-  assert(n > 0);
+DEFINE_int32(herd_server_ports, 1, "Number of server ports");
+DEFINE_int32(herd_client_ports, 1, "Number of client ports");
+// Base port index of HERD: the i-th available IB port (start from 0)
+DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
+DEFINE_int32(herd_machine_id, 0, "HERD machine id");
+DEFINE_int32(threads, 1, "Number of client threads");
 
+DEFINE_int32(update_percentage, 5,
+             "Percentage of update/set operations (0~100)");
+
+/** Generate a random permutation of [0, n - 1] for client @clt_gid */
+vector<int> get_random_permutation(int n, int clt_gid, uint64_t* seed) {
   /* Each client uses a different range in the cycle space of fastrand */
-  for (i = 0; i < clt_gid * HERD_NUM_KEYS; i++) {
+  for (int i = 0; i < clt_gid * HERD_NUM_KEYS; i++) {
     hrd_fastrand(seed);
   }
 
-  printf("client %d: creating a permutation of 0--%d. This takes time..\n",
-         clt_gid, n - 1);
+  RAW_LOG(INFO, "client %d: creating a permutation of 0~%d", clt_gid, n - 1);
+  vector<int> log(n);
+  std::iota(log.begin(), log.end(), 0);
 
-  int* log = (int*)malloc(n * sizeof(int));
-  assert(log != NULL);
-  for (i = 0; i < n; i++) {
-    log[i] = i;
+  RAW_DLOG(INFO, "client %d: shuffling..", clt_gid);
+  for (int i = n - 1; i >= 1; i--) {
+    int j = hrd_fastrand(seed) % (i + 1);
+    std::swap(log[i], log[j]);
   }
-
-  printf("\tclient %d: shuffling..\n", clt_gid);
-  for (i = n - 1; i >= 1; i--) {
-    j = hrd_fastrand(seed) % (i + 1);
-    temp = log[i];
-    log[i] = log[j];
-    log[j] = temp;
-  }
-  printf("\tclient %d: done creating random permutation\n", clt_gid);
+  RAW_LOG(INFO, "client %d: done creating random permutation", clt_gid);
 
   return log;
 }
 
-void* run_client(void* arg) {
+void ClientMain(herd_thread_params herd_params) {
   int i;
-  struct herd_thread_params params = *(struct herd_thread_params*)arg;
-  int clt_gid = params.id; /* Global ID of this client thread */
-  int num_client_ports = params.num_client_ports;
-  int num_server_ports = params.num_server_ports;
-  int update_percentage = params.update_percentage;
+  int clt_gid = herd_params.id; /* Global ID of this client thread */
+  int num_client_ports = herd_params.num_client_ports;
+  int num_server_ports = herd_params.num_server_ports;
+  int update_percentage = herd_params.update_percentage;
 
   /* This is the only port used by this client */
-  int ib_port_index = params.base_port_index + clt_gid % num_client_ports;
+  int ib_port_index = herd_params.base_port_index + clt_gid % num_client_ports;
 
   /*
    * The virtual server port index to connect to. This index is relative to
@@ -63,7 +69,7 @@ void* run_client(void* arg) {
       clt_gid,                /* local_hid */
       ib_port_index, -1,      /* port_index, numa_node_id */
       1, 1,                   /* #conn qps, uc */
-      NULL, 4096, -1,         /* prealloc conn buf, buf size, key */
+      nullptr, 4096, -1,      /* prealloc conn buf, buf size, key */
       1, DGRAM_BUF_SIZE, -1); /* num_dgram_qps, dgram_buf_size, key */
 
   char mstr_qp_name[HRD_QP_NAME_SIZE];
@@ -79,10 +85,10 @@ void* run_client(void* arg) {
   printf("main: Client %s published conn and dgram. Waiting for master %s\n",
          clt_conn_qp_name, mstr_qp_name);
 
-  struct hrd_qp_attr* mstr_qp = NULL;
-  while (mstr_qp == NULL) {
+  struct hrd_qp_attr* mstr_qp = nullptr;
+  while (mstr_qp == nullptr) {
     mstr_qp = hrd_get_published_qp(mstr_qp_name);
-    if (mstr_qp == NULL) {
+    if (mstr_qp == nullptr) {
       usleep(200000);
     }
   }
@@ -93,14 +99,15 @@ void* run_client(void* arg) {
 
   /* Start the real work */
   uint64_t seed = 0xdeadbeef;
-  int* key_arr = get_random_permutation(HERD_NUM_KEYS, clt_gid, &seed);
+  vector<int> key_arr = get_random_permutation(HERD_NUM_KEYS, clt_gid, &seed);
   int key_i, ret;
 
   /* Some tracking info */
   int ws[NUM_WORKERS] = {0}; /* Window slot to use for a worker */
 
-  struct mica_op* req_buf = (struct mica_op*)memalign(4096, sizeof(*req_buf));
-  assert(req_buf != NULL);
+  struct mica_op* req_buf =
+      reinterpret_cast<mica_op*>(memalign(4096, sizeof(mica_op)));
+  assert(req_buf != nullptr);
 
   struct ibv_send_wr wr, *bad_send_wr;
   struct ibv_sge sgl;
@@ -172,7 +179,7 @@ void* run_client(void* arg) {
 
     wr.opcode = IBV_WR_RDMA_WRITE;
     wr.num_sge = 1;
-    wr.next = NULL;
+    wr.next = nullptr;
     wr.sg_list = &sgl;
 
     wr.send_flags = (nb_tx & UNSIG_BATCH_) == 0 ? IBV_SEND_SIGNALED : 0;
@@ -193,120 +200,49 @@ void* run_client(void* arg) {
     nb_tx++;
     HRD_MOD_ADD(ws[wn], WINDOW_SIZE);
   }
-
-  return NULL;
 }
 
 int main(int argc, char* argv[]) {
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   /* Use small queues to reduce cache pressure */
-  assert(HRD_Q_DEPTH == 128);
+  static_assert(HRD_Q_DEPTH == 128);
 
   /* All requests should fit into the master's request region */
-  assert(sizeof(struct mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
-         RR_SIZE);
+  static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+                RR_SIZE);
 
   /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
-  assert(UNSIG_BATCH >= WINDOW_SIZE);     /* Pipelining check for clients */
-  assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
-
-  int i, c;
-  int is_master = -1;
-  int num_threads = -1;
-  int is_client = -1, machine_id = -1, postlist = -1, update_percentage = -1;
-  int base_port_index = -1, num_server_ports = -1, num_client_ports = -1;
-  struct herd_thread_params* param_arr;
-  pthread_t* thread_arr;
-
-  static struct option opts[] = {
-      {.name = "master", .has_arg = 1, .val = 'M'},
-      {.name = "num-threads", .has_arg = 1, .val = 't'},
-      {.name = "base-port-index", .has_arg = 1, .val = 'b'},
-      {.name = "num-server-ports", .has_arg = 1, .val = 'N'},
-      {.name = "num-client-ports", .has_arg = 1, .val = 'n'},
-      {.name = "is-client", .has_arg = 1, .val = 'c'},
-      {.name = "update-percentage", .has_arg = 1, .val = 'u'},
-      {.name = "machine-id", .has_arg = 1, .val = 'm'},
-      {.name = "postlist", .has_arg = 1, .val = 'p'},
-      {0}};
-
-  /* Parse and check arguments */
-  while (1) {
-    c = getopt_long(argc, argv, "M:t:b:N:n:c:u:m:p", opts, NULL);
-    if (c == -1) {
-      break;
-    }
-    switch (c) {
-      case 'M':
-        is_master = atoi(optarg);
-        assert(is_master == 1);
-        break;
-      case 't':
-        num_threads = atoi(optarg);
-        break;
-      case 'b':
-        base_port_index = atoi(optarg);
-        break;
-      case 'N':
-        num_server_ports = atoi(optarg);
-        break;
-      case 'n':
-        num_client_ports = atoi(optarg);
-        break;
-      case 'c':
-        is_client = atoi(optarg);
-        break;
-      case 'u':
-        update_percentage = atoi(optarg);
-        break;
-      case 'm':
-        machine_id = atoi(optarg);
-        break;
-      case 'p':
-        postlist = atoi(optarg);
-        break;
-      default:
-        printf("Invalid argument %d\n", c);
-        assert(false);
-    }
-  }
+  static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
+  static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
 
   /* Common checks for all (master, workers, clients */
-  assert(base_port_index >= 0 && base_port_index <= 8);
-  assert(num_server_ports >= 1 && num_server_ports <= 8);
+  assert(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
+  assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
 
-  /* Common sanity checks for worker process and per-machine client process */
-  assert(is_client == 0 || is_client == 1);
-
-  if (is_client == 1) {
-    assert(num_client_ports >= 1 && num_client_ports <= 8);
-    assert(num_threads >= 1);
-    assert(machine_id >= 0);
-    assert(update_percentage >= 0 && update_percentage <= 100);
-    assert(postlist == -1); /* Client postlist = NUM_WORKERS */
-  }
+  assert(FLAGS_herd_client_ports >= 1 && FLAGS_herd_client_ports <= 8);
+  CHECK_GE(FLAGS_threads, 1);
+  CHECK_GE(FLAGS_herd_machine_id, 0);
+  assert(FLAGS_update_percentage >= 0 && FLAGS_update_percentage <= 100);
 
   /* Launch a single server thread or multiple client threads */
-  printf("main: Using %d threads\n", num_threads);
-  param_arr = (struct herd_thread_params*)malloc(
-      num_threads * sizeof(struct herd_thread_params));
-  thread_arr = (pthread_t*)malloc(num_threads * sizeof(pthread_t));
+  LOG(INFO) << "Using " << FLAGS_threads << " threads";
+  std::vector<std::thread> threads;
 
-  for (i = 0; i < num_threads; i++) {
-    param_arr[i].postlist = postlist;
-
-    if (is_client) {
-      param_arr[i].id = (machine_id * num_threads) + i;
-      param_arr[i].base_port_index = base_port_index;
-      param_arr[i].num_server_ports = num_server_ports;
-      param_arr[i].num_client_ports = num_client_ports;
-      param_arr[i].update_percentage = update_percentage;
-
-      pthread_create(&thread_arr[i], NULL, run_client, &param_arr[i]);
-    }
+  for (int i = 0; i < FLAGS_threads; i++) {
+    herd_thread_params param = {
+        .id = (FLAGS_herd_machine_id * FLAGS_threads) + i,
+        .base_port_index = FLAGS_herd_base_port_index,
+        .num_server_ports = FLAGS_herd_server_ports,
+        .num_client_ports = FLAGS_herd_client_ports,
+        .update_percentage = FLAGS_update_percentage,
+        // Does not matter for clients. Client postlist = NUM_WORKERS
+        .postlist = -1};
+    auto t = std::thread(ClientMain, param);
+    threads.emplace_back(std::move(t));
   }
 
-  for (i = 0; i < num_threads; i++) {
-    pthread_join(thread_arr[i], NULL);
+  for (auto& t : threads) {
+    t.join();
   }
 
   return 0;
