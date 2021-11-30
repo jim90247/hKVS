@@ -10,6 +10,7 @@
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
+#include "util/zipfian_generator.h"
 
 constexpr int DGRAM_BUF_SIZE = 4096;
 
@@ -22,26 +23,25 @@ DEFINE_int32(threads, 1, "Number of client threads");
 
 DEFINE_int32(update_percentage, 5,
              "Percentage of update/set operations (0~100)");
+DEFINE_double(
+    zipfian_alpha, 0.99,
+    "Zipfian distribution parameter (higher for more skewed distribution)");
 
-/** Generate a random permutation of [0, n - 1] for client @clt_gid */
-vector<int> get_random_permutation(int n, int clt_gid, uint64_t* seed) {
-  /* Each client uses a different range in the cycle space of fastrand */
-  for (int i = 0; i < clt_gid * HERD_NUM_KEYS; i++) {
-    hrd_fastrand(seed);
+/**
+ * @brief Generate a key access trace based on Zipfian distribution.
+ *
+ * @param trace_len the length of the trace
+ * @param worker_id the worker thread id which will be used as the random seed
+ * @return the trace
+ */
+vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
+  ZipfianGenerator gen(HERD_NUM_KEYS, FLAGS_zipfian_alpha, worker_id);
+  vector<int> trace(trace_len);
+  for (size_t i = 0; i < trace_len; i++) {
+    trace[i] = gen.GetNumber();
   }
-
-  RAW_LOG(INFO, "client %2d: creating a permutation of 0~%d", clt_gid, n - 1);
-  vector<int> log(n);
-  std::iota(log.begin(), log.end(), 0);
-
-  RAW_DLOG(INFO, "client %d: shuffling..", clt_gid);
-  for (int i = n - 1; i >= 1; i--) {
-    int j = hrd_fastrand(seed) % (i + 1);
-    std::swap(log[i], log[j]);
-  }
-  RAW_LOG(INFO, "client %2d: done creating random permutation", clt_gid);
-
-  return log;
+  RAW_LOG(INFO, "Done generating Zipfian trace for worker %d", worker_id);
+  return trace;
 }
 
 void ClientMain(herd_thread_params herd_params) {
@@ -82,7 +82,7 @@ void ClientMain(herd_thread_params herd_params) {
 
   hrd_publish_conn_qp(cb, 0, clt_conn_qp_name);
   hrd_publish_dgram_qp(cb, 0, clt_dgram_qp_name);
-  RAW_LOG(INFO, "Client %s published conn and dgram. Waiting for master %s\n",
+  RAW_LOG(INFO, "Client %s published conn and dgram. Waiting for master %s",
           clt_conn_qp_name, mstr_qp_name);
 
   struct hrd_qp_attr* mstr_qp = nullptr;
@@ -93,14 +93,16 @@ void ClientMain(herd_thread_params herd_params) {
     }
   }
 
-  RAW_LOG(INFO, "Client %s found master! Connecting..\n", clt_conn_qp_name);
+  RAW_LOG(INFO, "Client %s found master! Connecting..", clt_conn_qp_name);
   hrd_connect_qp(cb, 0, mstr_qp);
   hrd_wait_till_ready(mstr_qp_name);
 
   /* Start the real work */
+  // the Zipfian trace
+  vector<int> trace = GenerateZipfianTrace(HERD_NUM_KEYS * 8UL, clt_gid);
+  size_t key_i = 0;
   uint64_t seed = 0xdeadbeef;
-  vector<int> key_arr = get_random_permutation(HERD_NUM_KEYS, clt_gid, &seed);
-  int key_i, ret;
+  int ret;
 
   /* Some tracking info */
   int ws[NUM_WORKERS] = {0}; /* Window slot to use for a worker */
@@ -169,8 +171,10 @@ void ClientMain(herd_thread_params herd_params) {
     /* Forge the HERD request */
     // FIXME: use Zipfian distribution to choose the key
     key_i = hrd_fastrand(&seed) % HERD_NUM_KEYS; /* Choose a key */
+    int key = trace.at(key_i);
+    key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
-    *(uint128*)req_buf = CityHash128_High64((char*)&key_arr[key_i], 4);
+    *(uint128*)req_buf = CityHash128_High64((char*)&key, sizeof(int));
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
     req_buf->val_len = is_update ? HERD_VALUE_SIZE : -1;
 
