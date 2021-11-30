@@ -13,8 +13,6 @@ function abort_exec() {
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
 export HRD_REGISTRY_IP="192.168.223.1"
-export MLX5_SINGLE_THREADED=1
-export MLX4_SINGLE_THREADED=1
 
 [ -f "${bindir}/herd" ] || abort_exec "Please install herd in ${bindir}"
 [ -f "${bindir}/combined_worker" ] || abort_exec "Please install combined_worker in ${bindir}"
