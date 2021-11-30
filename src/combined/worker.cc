@@ -5,10 +5,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 #include <unordered_set>
 #include <vector>
-#include <mutex>
 
 #include "clover/mitsume.h"
 #include "clover/mitsume_clt_test.h"
@@ -596,8 +596,7 @@ int main(int argc, char *argv[]) {
   static_assert(HRD_Q_DEPTH == 128);
 
   /* All requests should fit into the master's request region */
-  static_assert(sizeof(struct mica_op) * NUM_CLIENTS * NUM_WORKERS *
-                    WINDOW_SIZE <
+  static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
                 RR_SIZE);
 
   /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
@@ -608,8 +607,8 @@ int main(int argc, char *argv[]) {
   assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
   assert(FLAGS_postlist >= 1);
 
-  /* Launch a single server thread or multiple client threads */
-  printf("worker: Using %d threads\n", NUM_WORKERS);
+  LOG(INFO) << "Using " << NUM_WORKERS << " worker threads";
+  LOG(INFO) << "Expecting " << NUM_CLIENTS << " client threads in total";
 
   // Setup Clover compute node
   configuration_params clover_param = {

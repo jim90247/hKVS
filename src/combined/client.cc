@@ -30,7 +30,7 @@ vector<int> get_random_permutation(int n, int clt_gid, uint64_t* seed) {
     hrd_fastrand(seed);
   }
 
-  RAW_LOG(INFO, "client %d: creating a permutation of 0~%d", clt_gid, n - 1);
+  RAW_LOG(INFO, "client %2d: creating a permutation of 0~%d", clt_gid, n - 1);
   vector<int> log(n);
   std::iota(log.begin(), log.end(), 0);
 
@@ -39,7 +39,7 @@ vector<int> get_random_permutation(int n, int clt_gid, uint64_t* seed) {
     int j = hrd_fastrand(seed) % (i + 1);
     std::swap(log[i], log[j]);
   }
-  RAW_LOG(INFO, "client %d: done creating random permutation", clt_gid);
+  RAW_LOG(INFO, "client %2d: done creating random permutation", clt_gid);
 
   return log;
 }
@@ -82,8 +82,8 @@ void ClientMain(herd_thread_params herd_params) {
 
   hrd_publish_conn_qp(cb, 0, clt_conn_qp_name);
   hrd_publish_dgram_qp(cb, 0, clt_dgram_qp_name);
-  printf("main: Client %s published conn and dgram. Waiting for master %s\n",
-         clt_conn_qp_name, mstr_qp_name);
+  RAW_LOG(INFO, "Client %s published conn and dgram. Waiting for master %s\n",
+          clt_conn_qp_name, mstr_qp_name);
 
   struct hrd_qp_attr* mstr_qp = nullptr;
   while (mstr_qp == nullptr) {
@@ -93,7 +93,7 @@ void ClientMain(herd_thread_params herd_params) {
     }
   }
 
-  printf("main: Client %s found master! Connecting..\n", clt_conn_qp_name);
+  RAW_LOG(INFO, "Client %s found master! Connecting..\n", clt_conn_qp_name);
   hrd_connect_qp(cb, 0, mstr_qp);
   hrd_wait_till_ready(mstr_qp_name);
 
@@ -107,7 +107,8 @@ void ClientMain(herd_thread_params herd_params) {
 
   struct mica_op* req_buf =
       reinterpret_cast<mica_op*>(memalign(4096, sizeof(mica_op)));
-  assert(req_buf != nullptr);
+  RAW_CHECK(req_buf != nullptr,
+            "Failed to allocate 4KB-aligned request buffer");
 
   struct ibv_send_wr wr, *bad_send_wr;
   struct ibv_sge sgl;
@@ -134,7 +135,7 @@ void ClientMain(herd_thread_params herd_params) {
       clock_gettime(CLOCK_REALTIME, &end);
       double seconds = (end.tv_sec - start.tv_sec) +
                        (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
-      printf("main: Client %d: %.2f IOPS. nb_tx = %lld\n", clt_gid,
+      printf("main: Client %2d: %.2f IOPS. nb_tx = %lld\n", clt_gid,
              K_512 / seconds, nb_tx);
 
       rolling_iter = 0;
@@ -215,7 +216,6 @@ int main(int argc, char* argv[]) {
   static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
   static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
 
-  /* Common checks for all (master, workers, clients */
   assert(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
   assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
 
