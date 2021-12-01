@@ -338,7 +338,8 @@ void WorkerMain(herd_thread_params herd_params,
       if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
         // the second 8 bytes of mica_key.
-        mitsume_key key = reinterpret_cast<uint64 *>(&op_ptr_arr[i]->key)[1];
+        mitsume_key key =
+            ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
         if (clover_lookup_table.find(key) == clover_lookup_table.end()) {
           continue;
         }
