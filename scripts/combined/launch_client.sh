@@ -26,4 +26,5 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	--herd_base_port_index 0 \
 	--threads $num_threads \
 	--update_percentage 5 \
+	--zipfian_alpha 0.99 \
 	--herd_machine_id "$1"

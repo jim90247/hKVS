@@ -37,10 +37,19 @@ DEFINE_double(
 vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
   ZipfianGenerator gen(HERD_NUM_KEYS, FLAGS_zipfian_alpha, worker_id);
   vector<int> trace(trace_len);
+  size_t offloaded_keys = 0;
+  RAW_LOG(INFO, "Start generating Zipfian trace for worker %2d (alpha = %.2f)",
+          worker_id, FLAGS_zipfian_alpha);
   for (size_t i = 0; i < trace_len; i++) {
     trace[i] = gen.GetNumber();
+    if (trace[i] < kKeysToOffloadPerWorker) {
+      offloaded_keys++;
+    }
   }
-  RAW_LOG(INFO, "Done generating Zipfian trace for worker %d", worker_id);
+  RAW_LOG(INFO,
+          "Done generating Zipfian trace for worker %2d (fraction of offloaded "
+          "keys: %.3f)",
+          worker_id, static_cast<double>(offloaded_keys) / trace_len);
   return trace;
 }
 
@@ -133,12 +142,12 @@ void ClientMain(herd_thread_params herd_params) {
   }
 
   while (1) {
-    if (rolling_iter >= K_512) {
+    if (rolling_iter >= M_1) {
       clock_gettime(CLOCK_REALTIME, &end);
       double seconds = (end.tv_sec - start.tv_sec) +
                        (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
       printf("main: Client %2d: %.2f IOPS. nb_tx = %lld\n", clt_gid,
-             K_512 / seconds, nb_tx);
+             M_1 / seconds, nb_tx);
 
       rolling_iter = 0;
 
@@ -169,7 +178,6 @@ void ClientMain(herd_thread_params herd_params) {
     int is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
 
     /* Forge the HERD request */
-    // FIXME: use Zipfian distribution to choose the key
     key_i = hrd_fastrand(&seed) % HERD_NUM_KEYS; /* Choose a key */
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
