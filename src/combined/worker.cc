@@ -13,6 +13,7 @@
 #include "clover/mitsume.h"
 #include "clover/mitsume_clt_test.h"
 #include "clover/mitsume_clt_thread.h"
+#include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
@@ -26,175 +27,6 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(postlist, 1,
              "Post list size (max # of requests in ibv_post_send)");
 
-DEFINE_int32(clover_machine_id, 1, "Clover's machine id");
-DEFINE_int32(clover_ib_dev, 0, "Infiniband device id (start from 0)");
-// Base port index of Clover: the port id of clover_ib_dev
-DEFINE_int32(clover_ib_port, 1, "Clover's Infiniband port id (start from 1)");
-DEFINE_int32(clover_cn, 1, "Number of Clover compute nodes");
-DEFINE_int32(clover_dn, 1, "Number of Clover data nodes");
-DEFINE_int32(clover_loopback, 2, "Number of loopbacks (?)");
-DEFINE_string(clover_memcached_ip, "192.168.223.1", "Memcached IP");
-
-ib_inf *node_share_inf;
-
-int MITSUME_CLT_NUM;
-int MITSUME_MEM_NUM;
-
-/**
- * @brief Initialize Clover compute node context.
- *
- * @param input_arg Clover compute node parameters
- * @return the initialized Clover client context
- */
-mitsume_ctx_clt *InitCloverCnContext(struct configuration_params *input_arg) {
-  // MITSUME_CLT_CONSUMER_NUMBER is the maximum number of threads for Clover
-  // compute node.
-  static_assert(NUM_WORKERS <= MITSUME_CLT_CONSUMER_NUMBER);
-  int i;
-  mitsume_ctx_clt *client_ctx = new mitsume_ctx_clt;
-
-  mitsume_con_alloc_share_init();
-
-  client_ctx->all_lh_attr = new ptr_attr[mitsume_con_alloc_get_total_lh()];
-  client_ctx->ib_ctx = node_share_inf;
-  client_ctx->client_id = get_client_id(input_arg);
-  client_ctx->node_id = input_arg->machine_id;
-
-  // thread_metadata is populated in this function
-  mitsume_clt_thread_metadata_setup(input_arg, client_ctx);
-  i = 0;
-  {
-    MITSUME_PRINT("%llx %llx\n",
-                  (unsigned long long int)client_ctx->thread_metadata[i]
-                      .local_inf->user_input_space[0],
-                  (unsigned long long int)client_ctx->thread_metadata[i]
-                      .local_inf->user_input_mr[0]
-                      ->lkey);
-  }
-  return client_ctx;
-}
-
-int client_get_shortcut(struct mitsume_ctx_clt *client_ctx) {
-  /*ptr_attr *shortcut_attr = new ptr_attr[MITSUME_SHORTCUT_NUM];
-  ptr_attr *tmp_attr;
-  int per_allocation;
-  char memcached_string[MEMCACHED_MAX_NAME_LEN];
-  for(per_allocation=0;per_allocation<MITSUME_SHORTCUT_NUM;per_allocation++)
-  {
-      memset(memcached_string, 0, MEMCACHED_MAX_NAME_LEN);
-      sprintf(memcached_string, MITSUME_MEMCACHED_SHORTCUT_STRING,
-  per_allocation); tmp_attr = memcached_get_published_mr(memcached_string);
-      memcpy(&shortcut_attr[per_allocation], tmp_attr, sizeof(ptr_attr));
-      free(tmp_attr);
-      if(per_allocation==0||per_allocation==1023)
-          MITSUME_PRINT("%llx, %ld\n", (unsigned long
-  long)shortcut_attr[per_allocation].addr,
-  (long)shortcut_attr[per_allocation].rkey);
-  }*/
-  ptr_attr *shortcut_attr = new ptr_attr[MITSUME_SHORTCUT_NUM];
-  ptr_attr *tmp_attr;
-  int memory_id;
-  int start_allocation, end_allocation;
-  char memcached_string[MEMCACHED_MAX_NAME_LEN];
-  uint32_t target_shortcut_entry_space;
-  int current_index = 0;
-  // target_shortcut_entry_space = MITSUME_ROUND_UP(MITSUME_SHORTCUT_NUM,
-  // MITSUME_MEM_NUM);
-  target_shortcut_entry_space = MITSUME_SHORTCUT_NUM / MITSUME_MEM_NUM;
-  for (memory_id = 0; memory_id < MITSUME_MEM_NUM; memory_id++) {
-    start_allocation = memory_id * target_shortcut_entry_space;
-    end_allocation = (memory_id + 1) * target_shortcut_entry_space - 1;
-    memset(memcached_string, 0, MEMCACHED_MAX_NAME_LEN);
-    sprintf(memcached_string, MITSUME_MEMCACHED_SHORTCUT_STRING, memory_id);
-    tmp_attr = (ptr_attr *)memcached_get_published_size(
-        memcached_string,
-        sizeof(ptr_attr) * (end_allocation - start_allocation + 1));
-    memcpy(&shortcut_attr[current_index], tmp_attr,
-           sizeof(ptr_attr) * (end_allocation - start_allocation + 1));
-    current_index += end_allocation - start_allocation + 1;
-    free(tmp_attr);
-  }
-  client_ctx->all_shortcut_attr = shortcut_attr;
-  MITSUME_PRINT("finish getting shortcut\n");
-  return MITSUME_SUCCESS;
-}
-
-int client_setup_post_recv(mitsume_ctx_clt *context) {
-  void *alloc_space;
-  ptr_attr *tmp_attr_ptr;
-  int per_msg;
-  int per_qp;
-  uint32_t alloc_size = MITSUME_MAX_MESSAGE_SIZE;
-  context->per_qp_mr_attr_list =
-      new ptr_attr *[node_share_inf->num_local_rcqps];
-  context->per_post_recv_mr_list =
-      new struct ibv_mr *[node_share_inf->num_local_rcqps];
-
-  // register a memory space for each qp
-  for (per_qp = 0; per_qp < node_share_inf->num_local_rcqps; per_qp++) {
-    context->per_qp_mr_attr_list[per_qp] =
-        new ptr_attr[MITSUME_CON_MESSAGE_PER_POST];
-    alloc_space = mitsume_malloc(alloc_size * MITSUME_CON_MESSAGE_PER_POST);
-    context->per_post_recv_mr_list[per_qp] = ibv_reg_mr(
-        node_share_inf->pd, alloc_space,
-        alloc_size * MITSUME_CON_MESSAGE_PER_POST, MITSUME_MR_PERMISSION);
-    tmp_attr_ptr = context->per_qp_mr_attr_list[per_qp];
-    for (per_msg = 0; per_msg < MITSUME_CON_MESSAGE_PER_POST; per_msg++) {
-      tmp_attr_ptr[per_msg].addr =
-          (uint64_t)context->per_post_recv_mr_list[per_qp]->addr +
-          (uint64_t)alloc_size * per_msg;
-      tmp_attr_ptr[per_msg].rkey = context->per_post_recv_mr_list[per_qp]->rkey;
-    }
-  }
-
-  // post all memory space into qp
-  for (per_qp = 0; per_qp < node_share_inf->num_local_rcqps; per_qp++) {
-    ib_post_recv_inf *input_inf =
-        new ib_post_recv_inf[MITSUME_CON_MESSAGE_PER_POST];
-    for (per_msg = 0; per_msg < MITSUME_CON_MESSAGE_PER_POST; per_msg++) {
-      input_inf[per_msg].qp_index = per_qp;
-      input_inf[per_msg].length = alloc_size;
-      input_inf[per_msg].mr_index = per_msg;
-    }
-    ib_post_recv_connect_qp(node_share_inf, input_inf,
-                            context->per_qp_mr_attr_list[per_qp],
-                            MITSUME_CON_MESSAGE_PER_POST);
-    free(input_inf);
-  }
-
-  return MITSUME_SUCCESS;
-}
-
-/**
- * @brief Setup Clover compute node and KVS.
- *
- * This function should only be called once.
- *
- * @param params configuration parameters for Clover compute node.
- * @return the initialized Clover client context
- */
-mitsume_ctx_clt *SetupClover(configuration_params *params) {
-  node_share_inf = ib_complete_setup(params, CLIENT, "clover client");
-  RAW_CHECK(node_share_inf != nullptr, "ib_complete_setup failed");
-
-  mitsume_ctx_clt *client_ctx;
-  client_ctx = InitCloverCnContext(params);
-
-  RAW_CHECK(client_setup_post_recv(client_ctx) == 0,
-            "Failed to setup post_recv");
-  RAW_CHECK(client_get_shortcut(client_ctx) == 0,
-            "Failed to get correct shortcut");
-
-  mitsume_con_alloc_get_lh(nullptr, client_ctx);
-  mitsume_stat_init(MITSUME_ROLE::MITSUME_IS_CLIENT);
-
-  mitsume_tool_lru_init();
-  mitsume_tool_gc_init(client_ctx);
-
-  RAW_LOG(INFO, "Finish Clover client setup");
-  return client_ctx;
-}
-
 /**
  * @brief Copies frequently accessed KV pairs in MICA to Clover data node.
  *
@@ -206,25 +38,11 @@ mitsume_ctx_clt *SetupClover(configuration_params *params) {
  * @param[out] lookup_table the lookup table storing what keys are in Clover
  * @note Concurrent calls to this function will be serialized
  */
-void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata,
-                      int worker_id, mica_kv *kv,
-                      CloverLookupTable &lookup_table) {
+void PopulateDataNode(CloverCnThreadWrapper &clover_thread, int worker_id,
+                      mica_kv *kv, CloverLookupTable &lookup_table) {
   static std::mutex mutex;
   // Ensure this function is executed by only one thread at a time
   const std::lock_guard<std::mutex> lock(mutex);
-
-  // Follow the usage in mitsume_benchmark_ycsb, where only the first 4K bytes
-  // are used. Buffer is allocated at
-  // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
-  const size_t kBufSize = 4096;
-  // Buffer for reading, pre-allocated during context initialization.
-  char *const clover_rbuf = static_cast<char *>(
-      clover_thread_metadata->local_inf->user_output_space[0]);
-  // Buffer for writing.
-  char *const clover_wbuf = static_cast<char *>(
-      clover_thread_metadata->local_inf->user_input_space[0]);
-  fill(clover_rbuf, clover_rbuf + kBufSize, '\0');
-  fill(clover_wbuf, clover_wbuf + kBufSize, '\0');
 
   mica_key *mica_keys =
       reinterpret_cast<mica_key *>(mica_gen_keys(kKeysToOffloadPerWorker));
@@ -254,10 +72,8 @@ void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata,
     }
     mitsume_key clover_key =
         ConvertHerdKeyToCloverKey(mica_keys + i, worker_id);
-    memcpy(clover_wbuf, read_results[i].val_ptr, read_results[i].val_len);
-    int rc = mitsume_tool_open(clover_thread_metadata, clover_key, clover_wbuf,
-                               read_results[i].val_len,
-                               MITSUME_NUM_REPLICATION_BUCKET);
+    int rc = clover_thread.InsertKVPair(clover_key, read_results[i].val_ptr,
+                                        read_results[i].val_len);
     if (rc) {
       RAW_LOG(FATAL,
               "Failed to insert %d-th key (%lx) to Clover (return code = %d)",
@@ -278,7 +94,8 @@ void PopulateDataNode(mitsume_consumer_metadata *clover_thread_metadata,
           kKeysToOffloadPerWorker);
 }
 
-void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
+void WorkerMain(herd_thread_params herd_params,
+                CloverComputeNodeWrapper &clover_node) {
   int i, ret;
   int wrkr_lid = herd_params.id; /* Local ID of this worker thread*/
   int num_server_ports = herd_params.num_server_ports;
@@ -286,20 +103,7 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   int postlist = herd_params.postlist;
 
   // Use HERD local id as Clover thread id
-  mitsume_consumer_metadata *clover_thread_metadata =
-      &clover_ctx->thread_metadata[herd_params.id];
-  // Following the usage in mitsume_benchmark_ycsb, where only the first 4K
-  // bytes are used. Buffer is allocated at
-  // mitsume_util.cc:mitsume_local_thread_setup() (line 209/215).
-  const size_t kBufSize = 4096;
-  // Buffer for reading, pre-allocated during context initialization.
-  char *const clover_rbuf = static_cast<char *>(
-      clover_thread_metadata->local_inf->user_output_space[0]);
-  // Buffer for writing.
-  char *const clover_wbuf = static_cast<char *>(
-      clover_thread_metadata->local_inf->user_input_space[0]);
-  fill(clover_rbuf, clover_rbuf + kBufSize, '\0');
-  fill(clover_wbuf, clover_wbuf + kBufSize, '\0');
+  CloverCnThreadWrapper clover_thread(std::ref(clover_node), herd_params.id);
 
   /*
    * MICA-related checks. Note that @postlist is the largest batch size we
@@ -317,7 +121,7 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
   mica_populate_fixed_len(&kv, HERD_NUM_KEYS, HERD_VALUE_SIZE);
   CloverLookupTable clover_lookup_table;
-  PopulateDataNode(clover_thread_metadata, wrkr_lid, &kv, clover_lookup_table);
+  PopulateDataNode(clover_thread, wrkr_lid, &kv, clover_lookup_table);
 
   assert(num_server_ports < MAX_SERVER_PORTS); /* Avoid dynamic alloc */
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
@@ -538,10 +342,8 @@ void WorkerMain(herd_thread_params herd_params, mitsume_ctx_clt *clover_ctx) {
         if (clover_lookup_table.find(key) == clover_lookup_table.end()) {
           continue;
         }
-        memcpy(clover_wbuf, op_ptr_arr[i]->value, op_ptr_arr[i]->val_len);
-        int rc = mitsume_tool_write(clover_thread_metadata, key, clover_wbuf,
-                                    op_ptr_arr[i]->val_len,
-                                    MITSUME_TOOL_KVSTORE_WRITE);
+        int rc = clover_thread.WriteKVPair(key, op_ptr_arr[i]->value,
+                                           op_ptr_arr[i]->val_len);
         if (rc) {
           RAW_LOG_FATAL("Clover write failed: key=%lx, code=%d", key, rc);
         }
@@ -611,20 +413,9 @@ int main(int argc, char *argv[]) {
   LOG(INFO) << "Expecting " << NUM_CLIENTS << " client threads in total";
 
   // Setup Clover compute node
-  configuration_params clover_param = {
-      .global_thread_id = (FLAGS_clover_machine_id << P15_ID_SHIFT) + 0,
-      .local_thread_id = 0,
-      .base_port_index = FLAGS_clover_ib_port,
-      .num_servers = MITSUME_CON_NUM,
-      .num_clients = FLAGS_clover_cn,
-      .num_memorys = FLAGS_clover_dn,
-      .is_master = -1,  // dummy value
-      .machine_id = FLAGS_clover_machine_id,
-      // one clover CN thread for each HERD worker
-      .total_threads = NUM_WORKERS,
-      .device_id = FLAGS_clover_ib_dev,
-      .num_loopback = FLAGS_clover_loopback};
-  mitsume_ctx_clt *clover_ctx = SetupClover(&clover_param);
+  CloverComputeNodeWrapper clover_node(NUM_WORKERS);
+  clover_node.Initialize();
+  LOG(INFO) << "Done initializing clover compute node";
 
   std::vector<std::thread> threads;
   for (int i = 0; i < NUM_WORKERS; i++) {
@@ -635,7 +426,7 @@ int main(int argc, char *argv[]) {
         .num_client_ports = -1,   // does not matter for worker
         .update_percentage = -1,  // does not matter for worker
         .postlist = FLAGS_postlist};
-    auto t = std::thread(WorkerMain, param, clover_ctx);
+    auto t = std::thread(WorkerMain, param, std::ref(clover_node));
     threads.emplace_back(std::move(t));
   }
 
