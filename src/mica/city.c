@@ -399,6 +399,11 @@ uint128 CityHash128(const char *s, size_t len) {
   }
 }
 
+uint128 CityHash128_High64(const char *buf, size_t len) {
+  uint128 r = {.first = 0, .second = CityHash64(buf, len)};
+  return r;
+}
+
 #ifdef __SSE4_2__
 #include "citycrc.h"
 #include <nmmintrin.h>

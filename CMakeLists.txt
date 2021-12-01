@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_BUILD_TYPE RelWithDebInfo)
+# add -rdynamic
+set(CMAKE_ENABLE_EXPORTS ON)
 add_compile_options(-Wall -Wextra)
 
 if (NOT DEBUG)

@@ -1,4 +1,4 @@
-CFLAGS  := -O3 -Wall -Wno-unused-result -I ../libhrd/ -I ../mica/
+CFLAGS  := -O3 -Wall -Wno-unused-result -I ../libhrd/ -I ../mica/ -I ../
 LD      := gcc -O3
 LDFLAGS := ${LDFLAGS} -libverbs -lrt -lpthread -lmemcached -lnuma
 

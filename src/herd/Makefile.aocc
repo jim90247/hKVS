@@ -1,5 +1,5 @@
 CC	:= clang
-CFLAGS  := -Os -Wall -Wno-unused-result -I ../libhrd/ -I ../mica/
+CFLAGS  := -Os -Wall -Wno-unused-result -I ../libhrd/ -I ../mica/ -I ../
 LD      := ${CC} -Os
 LDFLAGS := ${LDFLAGS} -libverbs -lrt -lpthread -lmemcached -lnuma
 

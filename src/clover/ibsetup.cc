@@ -1,4 +1,7 @@
 #include "ibsetup.h"
+
+#include <boost/stacktrace.hpp>
+
 #include "op_counter.h"
 
 std::unordered_map<uint64_t, unsigned int> WR_ID_WAITING_TABLE;
@@ -910,6 +913,8 @@ int userspace_one_poll(struct ib_inf *ib_ctx, uint64_t wr_id,
       // printf("%d %llu\n", count, (unsigned long long int)wr_id);
       MITSUME_PRINT_ERROR("polling too many times %d %llu\n", count,
                           (unsigned long long int)wr_id);
+      std::cout << boost::stacktrace::stacktrace() << std::endl;
+      return MITSUME_TOO_MANY_POLLS;
       // MITSUME_IDLE_HERE;
     }
     if (userspace_check_done_wr_table(wr_id))

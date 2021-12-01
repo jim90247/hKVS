@@ -1,5 +1,8 @@
+#pragma once
+
 #include <stdint.h>
 #include "city.h"
+#include "common.h"
 
 /*
  * The polling logic in HERD requires the following:
@@ -34,6 +37,8 @@
  * 2: Pretty print GET/PUT operations
  */
 #define MICA_DEBUG 0
+
+EXTERN_C
 
 struct mica_resp {
   uint8_t type;
@@ -109,3 +114,5 @@ void mica_populate_fixed_len(struct mica_kv* kv, int n, int val_len);
 /* Debug functions */
 void mica_print_bucket(struct mica_kv* kv, int bkt_idx);
 void mica_print_op(struct mica_op* op);
+
+EXTERN_C_END

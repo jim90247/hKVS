@@ -51,9 +51,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+#include "common.h"
+
 typedef uint8_t uint8;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
+
+EXTERN_C
 
 typedef struct _uint128 uint128;
 struct _uint128 {
@@ -82,6 +86,20 @@ uint128 CityHash128(const char *s, size_t len);
 // Hash function for a byte array.  For convenience, a 128-bit seed is also
 // hashed into the result.
 uint128 CityHash128WithSeed(const char *s, size_t len, uint128 seed);
+
+/**
+ * @brief A hash function for a byte array.
+ *
+ * Produces a 128 bit hash but only higher 64 bits contains data, and lower 64
+ * bits are 0.
+ *
+ * @param buf the byte array
+ * @param len the length of the byte array
+ * @return the 128 bit hash value
+ */
+uint128 CityHash128_High64(const char *buf, size_t len);
+
+EXTERN_C_END
 
 #endif  // CITY_HASH_H_
 

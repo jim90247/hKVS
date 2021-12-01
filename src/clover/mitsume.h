@@ -74,6 +74,8 @@ using namespace std;
 #define P15_PTR_MEMID_MASK 0x1ff
 #define P15_PTR_OFFSET_MASK 0xffffffffffff
 
+constexpr uint64_t kMitsumeWorkRequestOffset = 11230000000UL;
+
 enum message_type {
   P15_MESSAGE_ERROR,
   P15_BENCHMARK_RPC_TEST,

@@ -20,6 +20,7 @@
 #include <malloc.h>
 #include <time.h>
 #include "hrd_sizes.h"
+#include "common.h"
 
 #define HRD_Q_DEPTH 128 /* Depth of all queues */
 
@@ -71,6 +72,8 @@
 
 /* Is pointer x aligned to A-byte alignment? */
 #define is_aligned(x, A) (((uint64_t)x) % A == 0)
+
+EXTERN_C
 
 /* Registry info about a QP */
 struct hrd_qp_attr {
@@ -230,5 +233,7 @@ void hrd_red_printf(const char* format, ...);
 void hrd_get_formatted_time(char* timebuf);
 void hrd_nano_sleep(uint64_t ns);
 char* hrd_getenv(const char* name);
+
+EXTERN_C_END
 
 #endif /* HRD_H */

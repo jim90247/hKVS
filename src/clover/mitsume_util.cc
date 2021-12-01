@@ -160,7 +160,7 @@ struct thread_local_inf *mitsume_local_thread_setup(struct ib_inf *inf,
 
   // for(wr_id=wr_id_base;wr_id<wr_id_base+MITSUME_CLT_MAX_WRID_BATCH;wr_id++)
   while (i < MITSUME_CLT_MAX_WRID_BATCH) {
-    wr_id = 1024 * (i + 1) + accumulate_wr_id_base;
+    wr_id = 1024 * (i + 1) + accumulate_wr_id_base + kMitsumeWorkRequestOffset;
     i++;
     userspace_init_wr_table_value(wr_id);
     ret_local_inf->queue_wr_id.push(wr_id);

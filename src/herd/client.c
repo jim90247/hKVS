@@ -157,9 +157,10 @@ void* run_client(void* arg) {
     int is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
 
     /* Forge the HERD request */
+    // FIXME: use Zipfian distribution to choose the key
     key_i = hrd_fastrand(&seed) % HERD_NUM_KEYS; /* Choose a key */
 
-    *(uint128*)req_buf = CityHash128((char*)&key_arr[key_i], 4);
+    *(uint128*)req_buf = CityHash128_High64((char*)&key_arr[key_i], 4);
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
     req_buf->val_len = is_update ? HERD_VALUE_SIZE : -1;
 

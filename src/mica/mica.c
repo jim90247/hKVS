@@ -310,7 +310,7 @@ uint128* mica_gen_keys(int n) {
   assert(key_arr != NULL);
 
   for (i = 0; i < n; i++) {
-    key_arr[i] = CityHash128((char*)&i, 4);
+    key_arr[i] = CityHash128_High64((char*)&i, 4);
   }
 
   return key_arr;
@@ -318,7 +318,7 @@ uint128* mica_gen_keys(int n) {
 
 /*
  * Populate the KVS with @n keys, each with value length = @val_len.
- *  - The ith key is the CityHash128 value of i.
+ *  - The ith key is the CityHash128_High64 value of i.
  *  - The bytes of the value inserted are all equal to the least significant
  *    byte of the key.
  */
