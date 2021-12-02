@@ -34,6 +34,7 @@ CloverComputeNodeWrapper::CloverComputeNodeWrapper(int workers)
       ib_inf_(nullptr) {
   MITSUME_CLT_NUM = num_cn_;
   MITSUME_MEM_NUM = num_dn_;
+  FLAGS_clover_memcached_ip.copy(MEMCACHED_IP, sizeof(MEMCACHED_IP));
 
   // MITSUME_CLT_CONSUMER_NUMBER is the maximum number of threads for Clover
   // compute node.

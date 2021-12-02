@@ -10,9 +10,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "clover/mitsume.h"
-#include "clover/mitsume_clt_test.h"
-#include "clover/mitsume_clt_thread.h"
 #include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
@@ -391,9 +388,6 @@ void WorkerMain(herd_thread_params herd_params,
 
 int main(int argc, char *argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  FLAGS_clover_memcached_ip.copy(MEMCACHED_IP, sizeof(MEMCACHED_IP));
-  MITSUME_CLT_NUM = FLAGS_clover_cn;
-  MITSUME_MEM_NUM = FLAGS_clover_dn;
 
   /* Use small queues to reduce cache pressure */
   static_assert(HRD_Q_DEPTH == 128);

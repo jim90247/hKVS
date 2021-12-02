@@ -1,7 +1,7 @@
 #include "hrd.h"
 
 /* Every thread creates a TCP connection to the registry only once. */
-__thread memcached_st* memc = NULL;
+static __thread memcached_st* memc = NULL;
 
 /* Print information about all IB devices in the system */
 void hrd_ibv_devinfo(void) {
