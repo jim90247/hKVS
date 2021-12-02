@@ -183,7 +183,6 @@ void ClientMain(herd_thread_params herd_params,
     int is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
 
     /* Forge the HERD request */
-    key_i = hrd_fastrand(&seed) % HERD_NUM_KEYS; /* Choose a key */
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
