@@ -7,6 +7,7 @@
 #include <thread>
 #include <vector>
 
+#include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
@@ -53,7 +54,8 @@ vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
   return trace;
 }
 
-void ClientMain(herd_thread_params herd_params) {
+void ClientMain(herd_thread_params herd_params,
+                CloverComputeNodeWrapper& clover_node, int local_id) {
   int i;
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
@@ -68,6 +70,9 @@ void ClientMain(herd_thread_params herd_params) {
    * the server's base_port_index (that the client does not know).
    */
   int srv_virt_port_index = clt_gid % num_server_ports;
+
+  // Use local thread id as Clover thread id
+  CloverCnThreadWrapper clover_thread(std::ref(clover_node), local_id);
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -238,8 +243,18 @@ int main(int argc, char* argv[]) {
 
   /* Launch a single server thread or multiple client threads */
   LOG(INFO) << "Using " << FLAGS_threads << " threads";
-  std::vector<std::thread> threads;
 
+  CloverComputeNodeWrapper clover_node(FLAGS_threads);
+  /* Since primary KVS (combined_worker) initializes connection to Clover before
+   * accepting connections from client, clients should also initializes
+   * connection to Clover first before connecting to primary KVS
+   * (combined_worker). Otherwise there will be a deadlock, since Clover
+   * initialization completes only when all Clover nodes are connected.
+   */
+  clover_node.Initialize();
+  LOG(INFO) << "Done initializing clover compute node";
+
+  std::vector<std::thread> threads;
   for (int i = 0; i < FLAGS_threads; i++) {
     herd_thread_params param = {
         .id = (FLAGS_herd_machine_id * FLAGS_threads) + i,
@@ -249,7 +264,7 @@ int main(int argc, char* argv[]) {
         .update_percentage = FLAGS_update_percentage,
         // Does not matter for clients. Client postlist = NUM_WORKERS
         .postlist = -1};
-    auto t = std::thread(ClientMain, param);
+    auto t = std::thread(ClientMain, param, std::ref(clover_node), i);
     threads.emplace_back(std::move(t));
   }
 
