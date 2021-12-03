@@ -29,8 +29,8 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	--zipfian_alpha 0.99 \
 	--herd_machine_id "$1" \
 	--clover_machine_id 2 \
-    --clover_ib_dev 1 \
-    --clover_ib_port 1 \
-    --clover_cn 2 \
-    --clover_dn 1 \
-    --clover_memcached_ip "$HRD_REGISTRY_IP"
+	--clover_ib_dev 1 \
+	--clover_ib_port 1 \
+	--clover_cn 2 \
+	--clover_dn 1 \
+	--clover_memcached_ip "$HRD_REGISTRY_IP"
