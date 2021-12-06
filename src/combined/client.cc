@@ -115,7 +115,7 @@ void ClientMain(herd_thread_params herd_params,
 
   /* Start the real work */
   // the Zipfian trace
-  vector<int> trace = GenerateZipfianTrace(HERD_NUM_KEYS * 8UL, clt_gid);
+  vector<int> trace = GenerateZipfianTrace(HERD_NUM_KEYS, clt_gid);
   size_t key_i = 0;
   uint64_t seed = 0xdeadbeef;
   int ret;
