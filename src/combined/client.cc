@@ -29,11 +29,13 @@ DEFINE_double(
     "Zipfian distribution parameter (higher for more skewed distribution)");
 
 /**
- * @brief Generate a key access trace based on Zipfian distribution.
+ * @brief Generate a key access trace based on Zipfian distribution. Key range:
+ * [0, HERD_NUM_KEYS).
  *
  * @param trace_len the length of the trace
  * @param worker_id the worker thread id which will be used as the random seed
- * @return the trace
+ * @return a vector of integers in range [0, HERD_NUM_KEYS) representing the
+ * trace
  */
 vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
   ZipfianGenerator gen(HERD_NUM_KEYS, FLAGS_zipfian_alpha, worker_id);
