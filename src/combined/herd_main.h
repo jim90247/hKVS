@@ -86,7 +86,7 @@ constexpr int kKeysToOffloadPerWorker = 10000;
  * Clover by replacing the lowest 8 bits with the worker thread id.
  *
  * @param herd_key the key used in HERD
- * @param tid the id of HERD worke thread
+ * @param tid the id of HERD worker thread
  * @return the corresponding key to query in Clover
  */
 inline mitsume_key ConvertHerdKeyToCloverKey(mica_key *herd_key, uint8_t tid) {
