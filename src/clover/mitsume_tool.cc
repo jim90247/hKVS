@@ -408,7 +408,9 @@ int mitsume_tool_query(struct mitsume_consumer_metadata *thread_metadata,
               reply->content.msg_entry_request.ptr[MITSUME_REPLICATION_PRIMARY]
                   .pointer) == 0) // remote side responses no record
       {
+#ifndef NDEBUG
         MITSUME_INFO("key %llu is not created\n", (unsigned long long int)key);
+#endif
         // mitsume_tool_begin(thread_metadata);
         return MITSUME_ERROR;
       } else if (option_flag & MITSUME_TOOL_QUERY_FORCE_REMOTE) {
@@ -1269,10 +1271,14 @@ int mitsume_tool_read(struct mitsume_consumer_metadata *thread_metadata,
   query_ret = mitsume_tool_query(thread_metadata, key, &query, 0, 0);
 
   if (query_ret) {
+#ifdef NDEBUG
+    goto abort_read_silent;
+#else
     MITSUME_INFO("query fail with key %llu \n", (unsigned long long int)key);
     // MITSUME_STAT_ADD(MITSUME_STAT_CLT_READ_FAIL, 1);
     local_errno = __LINE__;
     goto abort_read;
+#endif
   }
   // MITSUME_TOOL_PRINT_POINTER_NULL(&query.ptr);
 
@@ -1389,7 +1395,7 @@ int mitsume_tool_read(struct mitsume_consumer_metadata *thread_metadata,
   // step3: get data
 abort_read:
   MITSUME_PRINT_ERROR("abort read with error %d\n", local_errno);
-
+abort_read_silent:
   mitsume_tool_end(thread_metadata, coro_id);
   return MITSUME_ERROR;
 }

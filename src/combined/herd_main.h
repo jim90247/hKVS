@@ -1,7 +1,7 @@
 #include <cstdint>
 
-#include "mica/mica.h"
 #include "clover/mitsume_struct.h"
+#include "mica/mica.h"
 
 /*
  * The polling logic in HERD requires the following:
@@ -32,7 +32,8 @@ constexpr int HERD_PUT_REQ_SIZE = 16 + 1 + 1 + HERD_VALUE_SIZE;
 /* Configuration options */
 constexpr int MAX_SERVER_PORTS = 4;
 constexpr int NUM_WORKERS = 8;
-constexpr int NUM_CLIENTS = 16;
+/// Total number of HERD client threads.
+constexpr int NUM_CLIENTS = 8;
 
 /* Performance options */
 constexpr int WINDOW_SIZE = 32; /* Outstanding requests kept by each client */
@@ -93,4 +94,15 @@ inline mitsume_key ConvertHerdKeyToCloverKey(mica_key *herd_key, uint8_t tid) {
   mitsume_key clover_key = reinterpret_cast<uint64 *>(herd_key)[1];
   clover_key &= ~((1UL << 8) - 1UL);  // mask out lowest 8 bits
   return (clover_key | tid);
+}
+
+/**
+ * @brief Converts plain-text keys to HERD key hash.
+ *
+ * @param plain_key the plain-text key which is a number in range [0,
+ * HERD_NUM_KEYS)
+ * @return the HERD key hash
+ */
+inline uint128 ConvertPlainKeyToHerdKey(int plain_key) {
+  return CityHash128_High64((char *)&plain_key, sizeof(int));
 }

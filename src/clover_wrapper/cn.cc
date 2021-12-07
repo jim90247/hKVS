@@ -191,7 +191,7 @@ CloverCnThreadWrapper::CloverCnThreadWrapper(CloverComputeNodeWrapper &cn,
       metadata_(cn.clover_ctx_ != nullptr
                     ? &cn.clover_ctx_->thread_metadata[thread_id_]
                     : nullptr) {
-  CHECK_NOTNULL(cn.clover_ctx_);
+  CHECK_NOTNULL(metadata_);
 
   for (int i = 0; i < MITSUME_CLT_COROUTINE_NUMBER; i++) {
     // Follow the usage in mitsume_benchmark_ycsb, where only the first 4K bytes
@@ -208,8 +208,8 @@ int CloverCnThreadWrapper::InsertKVPair(mitsume_key key, const void *val,
                                         size_t len) {
   RAW_CHECK(val != nullptr, "Value buffer is null");
 
-  memcpy(wbuf_[0], val, len);
-  return mitsume_tool_open(metadata_, key, wbuf_[0], len,
+  memcpy(wbuf_[kMasterCoroutineIdx], val, len);
+  return mitsume_tool_open(metadata_, key, wbuf_[kMasterCoroutineIdx], len,
                            MITSUME_NUM_REPLICATION_BUCKET);
 }
 
@@ -218,16 +218,37 @@ int CloverCnThreadWrapper::ReadKVPair(mitsume_key key, void *val, uint32_t *len,
   RAW_CHECK(val != nullptr, "Value buffer is null");
   RAW_CHECK(len != nullptr, "Value size buffer is null");
 
-  int rc = mitsume_tool_read(metadata_, key, rbuf_[0], len,
+  int rc = mitsume_tool_read(metadata_, key, rbuf_[kMasterCoroutineIdx], len,
                              MITSUME_TOOL_KVSTORE_READ);
   if (rc == MITSUME_SUCCESS) {
     if (*len > maxlen) {
       RAW_LOG(WARNING,
               "Provided buffer is too small to fit the value (%lu < %u)",
               maxlen, *len);
-      memcpy(val, rbuf_[0], maxlen);
+      memcpy(val, rbuf_[kMasterCoroutineIdx], maxlen);
     } else {
-      memcpy(val, rbuf_[0], *len);
+      memcpy(val, rbuf_[kMasterCoroutineIdx], *len);
+    }
+  }
+  return rc;
+}
+
+int CloverCnThreadWrapper::ReadKVPair(mitsume_key key, void *val, uint32_t *len,
+                                      size_t maxlen, int coro,
+                                      coro_yield_t &yield) {
+  RAW_CHECK(val != nullptr, "Value buffer is null");
+  RAW_CHECK(len != nullptr, "Value size buffer is null");
+
+  int rc = mitsume_tool_read(metadata_, key, rbuf_[coro], len,
+                             MITSUME_TOOL_KVSTORE_READ, coro, yield);
+  if (rc == MITSUME_SUCCESS) {
+    if (*len > maxlen) {
+      RAW_LOG(WARNING,
+              "Provided buffer is too small to fit the value (%lu < %u)",
+              maxlen, *len);
+      memcpy(val, rbuf_[coro], maxlen);
+    } else {
+      memcpy(val, rbuf_[coro], *len);
     }
   }
   return rc;
@@ -236,7 +257,23 @@ int CloverCnThreadWrapper::ReadKVPair(mitsume_key key, void *val, uint32_t *len,
 int CloverCnThreadWrapper::WriteKVPair(mitsume_key key, const void *val,
                                        size_t len) {
   RAW_CHECK(val != nullptr, "Value buffer is null");
-  memcpy(wbuf_[0], val, len);
-  return mitsume_tool_write(metadata_, key, wbuf_[0], len,
+  memcpy(wbuf_[kMasterCoroutineIdx], val, len);
+  return mitsume_tool_write(metadata_, key, wbuf_[kMasterCoroutineIdx], len,
                             MITSUME_TOOL_KVSTORE_WRITE);
+}
+
+void CloverCnThreadWrapper::YieldToAnotherCoro(int coro, coro_yield_t &yield) {
+  yield_to_another_coro(metadata_->local_inf, coro, yield);
+}
+
+void CloverCnThreadWrapper::RegisterCoroutine(coro_call_t &&coro, int id) {
+  RAW_CHECK(id < MITSUME_CLT_COROUTINE_NUMBER, "Invalid coroutine id");
+  metadata_->local_inf->coro_arr[id] = std::move(coro);
+  if (id != kMasterCoroutineIdx) {
+    metadata_->local_inf->coro_queue.push(id);
+  }
+}
+
+void CloverCnThreadWrapper::ExecuteMasterCoroutine() {
+  metadata_->local_inf->coro_arr[kMasterCoroutineIdx]();
 }

@@ -16,6 +16,9 @@ DECLARE_string(clover_memcached_ip);
 extern int MITSUME_CLT_NUM;
 extern int MITSUME_MEM_NUM;
 
+constexpr int kMasterCoroutineIdx = MITSUME_CLT_TEMP_COROUTINE_ID;
+static_assert(kMasterCoroutineIdx < MITSUME_CLT_COROUTINE_NUMBER);
+
 // Forward declaration
 class CloverCnThreadWrapper;
 
@@ -97,8 +100,23 @@ class CloverCnThreadWrapper {
    * @param[out] len the pointer to the value size buffer
    * @param[in] maxlen the value buffer size
    * @return MITSUME_SUCCESS on success
+   * @note This function does not yield to other coroutines during execution.
+   * @note This function uses the coroutine 0's resource (e.g. buffer).
    */
   int ReadKVPair(mitsume_key key, void* val, uint32_t* len, size_t maxlen);
+  /**
+   * @brief Reads a key-value pair from Clover with a specific coroutine.
+   *
+   * @param[in] key the key
+   * @param[out] val the pointer to the value buffer
+   * @param[out] len the pointer to the value size buffer
+   * @param[in] maxlen the value buffer size
+   * @param[in] coro the coroutine id
+   * @param[in, out] yield the coroutine yield object
+   * @return MITSUME_SUCCESS on success
+   */
+  int ReadKVPair(mitsume_key key, void* val, uint32_t* len, size_t maxlen,
+                 int coro, coro_yield_t& yield);
   /**
    * @brief Updates the value of an existing key in Clover.
    *
@@ -108,6 +126,24 @@ class CloverCnThreadWrapper {
    * @return MITSUME_SUCCESS on success
    */
   int WriteKVPair(mitsume_key key, const void* val, size_t len);
+  /**
+   * @brief Yields to another active coroutine.
+   * 
+   * @param coro current coroutine id
+   * @param yield the coroutine yield object
+   */
+  void YieldToAnotherCoro(int coro, coro_yield_t& yield);
+  /**
+   * @brief Registers the coroutine into scheduling queue.
+   * 
+   * @param coro the coroutine function with no argument
+   * @param id the index of coroutine
+   */
+  void RegisterCoroutine(coro_call_t&& coro, int id);
+  /**
+   * @brief Launches the master coroutine (kMasterCoroutineIdx).
+   */
+  void ExecuteMasterCoroutine();
 
  private:
   const int thread_id_;
