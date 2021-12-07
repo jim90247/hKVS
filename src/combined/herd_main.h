@@ -1,6 +1,7 @@
 #include <cstdint>
 
 #include "clover/mitsume_struct.h"
+#include "libhrd/hrd.h"
 #include "mica/mica.h"
 
 /*
@@ -54,9 +55,22 @@ struct herd_thread_params {
   int base_port_index;
   int num_server_ports;
   int num_client_ports;
-  int update_percentage;
+  uint32_t update_percentage;
   int postlist;
 };
+
+/* Use small queues to reduce cache pressure */
+static_assert(HRD_Q_DEPTH == 128);
+
+/* All requests should fit into the master's request region */
+static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+              RR_SIZE);
+
+/* Unsignaled completion checks. worker.c does its own check w/ @postlist */
+static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
+static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
+
+static_assert(HERD_VALUE_SIZE <= MICA_MAX_VALUE);
 
 /* NOTE: the max key storage in Clover is likely not large enough to
  * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.

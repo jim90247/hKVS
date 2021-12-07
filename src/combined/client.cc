@@ -16,6 +16,8 @@
 
 constexpr int DGRAM_BUF_SIZE = 4096;
 constexpr int kCloverWorkerCoroutines = 4;
+// Clover coroutines + master coroutine
+static_assert(kCloverWorkerCoroutines + 1 <= MITSUME_CLT_COROUTINE_NUMBER);
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 DEFINE_int32(herd_client_ports, 1, "Number of client ports");
@@ -27,8 +29,8 @@ DEFINE_int32(herd_threads, 1, "Number of threads running HERD client");
 DEFINE_int32(clover_threads, 1,
              "Number of threads running Clover compute node");
 
-DEFINE_int32(update_percentage, 5,
-             "Percentage of update/set operations (0~100)");
+DEFINE_uint32(update_percentage, 5,
+              "Percentage of update/set operations (0~100)");
 DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
@@ -69,7 +71,7 @@ void HerdMain(herd_thread_params herd_params) {
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
-  int update_percentage = herd_params.update_percentage;
+  uint32_t update_percentage = herd_params.update_percentage;
 
   /* This is the only port used by this client */
   int ib_port_index = herd_params.base_port_index + clt_gid % num_client_ports;
@@ -179,7 +181,7 @@ void HerdMain(herd_thread_params herd_params) {
       }
 
       ret = ibv_post_recv(cb->dgram_qp[0], &recv_wr[0], &bad_recv_wr);
-      CPE(ret, "ibv_post_recv error", ret);
+      RAW_CHECK(ret == 0, strerror(ret));
     }
 
     if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
@@ -217,7 +219,7 @@ void HerdMain(herd_thread_params herd_params) {
     wr.wr.rdma.rkey = mstr_qp->rkey;
 
     ret = ibv_post_send(cb->conn_qp[0], &wr, &bad_send_wr);
-    CPE(ret, "ibv_post_send error", ret);
+    RAW_CHECK(ret == 0, strerror(ret));
     // printf("Client %d: sending request index %lld\n", clt_gid, nb_tx);
 
     rolling_iter++;
@@ -319,28 +321,14 @@ void CloverMain(CloverComputeNodeWrapper& clover_node, int clover_thread_id) {
 
 int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  /* Use small queues to reduce cache pressure */
-  static_assert(HRD_Q_DEPTH == 128);
 
-  /* All requests should fit into the master's request region */
-  static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
-                RR_SIZE);
-
-  /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
-  static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
-  static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
-
-  // Clover coroutines + master coroutine
-  static_assert(kCloverWorkerCoroutines + 1 <= MITSUME_CLT_COROUTINE_NUMBER);
-
-  assert(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
-  assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
-
-  assert(FLAGS_herd_client_ports >= 1 && FLAGS_herd_client_ports <= 8);
+  CHECK(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
+  CHECK(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
+  CHECK(FLAGS_herd_client_ports >= 1 && FLAGS_herd_client_ports <= 8);
   // should have at least one client thread of HERD or Clover
   CHECK_GE(FLAGS_herd_threads + FLAGS_clover_threads, 1);
   CHECK_GE(FLAGS_herd_machine_id, 0);
-  assert(FLAGS_update_percentage >= 0 && FLAGS_update_percentage <= 100);
+  CHECK_LE(FLAGS_update_percentage, 100);
 
   LOG(INFO) << "Using " << FLAGS_herd_threads << " threads for HERD and "
             << FLAGS_clover_threads << " threads for Clover";
