@@ -406,7 +406,7 @@ int main(int argc, char *argv[]) {
         .base_port_index = FLAGS_herd_base_port_index,
         .num_server_ports = FLAGS_herd_server_ports,
         .num_client_ports = -1,   // does not matter for worker
-        .update_percentage = 0UL,  // does not matter for worker
+        .update_percentage = 0U,  // does not matter for worker
         .postlist = FLAGS_postlist};
     auto t = std::thread(WorkerMain, param, std::ref(clover_node));
     threads.emplace_back(std::move(t));
