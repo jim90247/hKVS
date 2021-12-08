@@ -12,11 +12,18 @@ function abort_exec() {
 
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
-export HRD_REGISTRY_IP="192.168.223.1"
+export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
 export MLX5_SINGLE_THREADED=1
 export MLX4_SINGLE_THREADED=1
 
+show_message "Memcached server IP: ${HRD_REGISTRY_IP}"
+if ! ping "$HRD_REGISTRY_IP" -c 1 >/dev/null; then
+    abort_exec "Memcached server is not reachable"
+fi
+
 [ "$#" -eq 1 ] || abort_exec "Illegal number of parameters."
+
+[ -f "${bindir}/combined_client" ] || abort_exec "Please install combined_client in ${bindir}"
 
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
@@ -25,7 +32,7 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	--update_percentage 5 \
 	--zipfian_alpha 0.99 \
 	--herd_machine_id "$1" \
-	--clover_machine_id 2 \
+	--clover_machine_id $(($1 + 2)) \
 	--clover_ib_dev 1 \
 	--clover_ib_port 1 \
 	--clover_cn 2 \

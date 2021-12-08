@@ -12,7 +12,7 @@ function abort_exec() {
 
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
-export HRD_REGISTRY_IP="192.168.223.1"
+export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
 
 [ -f "${bindir}/herd" ] || abort_exec "Please install herd in ${bindir}"
 [ -f "${bindir}/combined_worker" ] || abort_exec "Please install combined_worker in ${bindir}"
@@ -36,6 +36,7 @@ show_message "Reset server QP registry"
 sudo pkill memcached
 memcached -u root -I 128m -m 2048 -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
 sleep 1
+show_message "Memcached server IP: $HRD_REGISTRY_IP"
 
 show_message "Starting master process"
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
@@ -47,7 +48,7 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 # Give the master process time to create and register per-port request regions
 sleep 1
 
-show_message "Starting worker threads"
+show_message "Starting workers"
 # `stdbuf --output=L` makes stdout line-buffered even when redirected to file using tee
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
     stdbuf --output=L \
