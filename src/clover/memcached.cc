@@ -1,6 +1,6 @@
 #include "memcached.h"
 
-__thread memcached_st *memc = NULL;
+static __thread memcached_st *memc = NULL;
 char MEMCACHED_IP[64];
 
 memcached_st *memcached_create_memc(void) {

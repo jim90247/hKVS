@@ -53,10 +53,10 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
     stdbuf --output=L \
     numactl --cpunodebind=0 --membind=0 "${bindir}/combined_worker" \
     --herd_base_port_index 0 \
-    --postlist 16 \
+    --postlist 8 \
     --clover_machine_id 1 \
     --clover_ib_dev 1 \
     --clover_ib_port 1 \
-    --clover_cn 1 \
+    --clover_cn 2 \
     --clover_dn 1 \
     --clover_memcached_ip "$HRD_REGISTRY_IP" 2>&1 | tee "$worker_log" &

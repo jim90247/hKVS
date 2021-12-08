@@ -4,38 +4,50 @@
 #include <glog/raw_logging.h>
 
 #include <numeric>
+#include <queue>
 #include <thread>
 #include <vector>
 
+#include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
 #include "util/zipfian_generator.h"
 
 constexpr int DGRAM_BUF_SIZE = 4096;
+constexpr int kCloverWorkerCoroutines = 4;
+// Clover coroutines + master coroutine
+static_assert(kCloverWorkerCoroutines + 1 <= MITSUME_CLT_COROUTINE_NUMBER);
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 DEFINE_int32(herd_client_ports, 1, "Number of client ports");
 // Base port index of HERD: the i-th available IB port (start from 0)
 DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(herd_machine_id, 0, "HERD machine id");
-DEFINE_int32(threads, 1, "Number of client threads");
+DEFINE_int32(herd_threads, 1, "Number of threads running HERD client");
 
-DEFINE_int32(update_percentage, 5,
-             "Percentage of update/set operations (0~100)");
+DEFINE_int32(clover_threads, 1,
+             "Number of threads running Clover compute node");
+
+DEFINE_uint32(update_percentage, 5,
+              "Percentage of update/set operations (0~100)");
 DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
 
 /**
- * @brief Generate a key access trace based on Zipfian distribution.
+ * @brief Generates a key access trace based on Zipfian distribution. Key range:
+ * [0, key_range).
  *
  * @param trace_len the length of the trace
  * @param worker_id the worker thread id which will be used as the random seed
- * @return the trace
+ * @param key_range the key range
+ * @return a vector of integers in range [0, key_range) representing the
+ * trace
  */
-vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
-  ZipfianGenerator gen(HERD_NUM_KEYS, FLAGS_zipfian_alpha, worker_id);
+vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id,
+                                 int key_range) {
+  ZipfianGenerator gen(key_range, FLAGS_zipfian_alpha, worker_id);
   vector<int> trace(trace_len);
   size_t offloaded_keys = 0;
   RAW_LOG(INFO, "Start generating Zipfian trace for worker %2d (alpha = %.2f)",
@@ -53,12 +65,13 @@ vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id) {
   return trace;
 }
 
-void ClientMain(herd_thread_params herd_params) {
+/// HERD thread main function
+void HerdMain(herd_thread_params herd_params) {
   int i;
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
-  int update_percentage = herd_params.update_percentage;
+  uint32_t update_percentage = herd_params.update_percentage;
 
   /* This is the only port used by this client */
   int ib_port_index = herd_params.base_port_index + clt_gid % num_client_ports;
@@ -108,7 +121,7 @@ void ClientMain(herd_thread_params herd_params) {
 
   /* Start the real work */
   // the Zipfian trace
-  vector<int> trace = GenerateZipfianTrace(HERD_NUM_KEYS * 8UL, clt_gid);
+  vector<int> trace = GenerateZipfianTrace(16UL << 20, clt_gid, HERD_NUM_KEYS);
   size_t key_i = 0;
   uint64_t seed = 0xdeadbeef;
   int ret;
@@ -141,13 +154,14 @@ void ClientMain(herd_thread_params herd_params) {
                         cb->dgram_buf_mr->lkey);
   }
 
+  constexpr long kMaxRollingIter = M_1;
   while (1) {
-    if (rolling_iter >= M_1) {
+    if (rolling_iter >= kMaxRollingIter) {
       clock_gettime(CLOCK_REALTIME, &end);
-      double seconds = (end.tv_sec - start.tv_sec) +
-                       (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
-      printf("main: Client %2d: %.2f IOPS. nb_tx = %lld\n", clt_gid,
-             M_1 / seconds, nb_tx);
+      double sec = (end.tv_sec - start.tv_sec) +
+                   (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
+      RAW_LOG(INFO, "HERD worker %4d: %12.3f op/s", clt_gid,
+              kMaxRollingIter / sec);
 
       rolling_iter = 0;
 
@@ -167,7 +181,7 @@ void ClientMain(herd_thread_params herd_params) {
       }
 
       ret = ibv_post_recv(cb->dgram_qp[0], &recv_wr[0], &bad_recv_wr);
-      CPE(ret, "ibv_post_recv error", ret);
+      RAW_CHECK(ret == 0, strerror(ret));
     }
 
     if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
@@ -181,7 +195,7 @@ void ClientMain(herd_thread_params herd_params) {
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
-    *(uint128*)req_buf = CityHash128_High64((char*)&key, sizeof(int));
+    *(uint128*)req_buf = ConvertPlainKeyToHerdKey(key);
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
     req_buf->val_len = is_update ? HERD_VALUE_SIZE : -1;
 
@@ -205,7 +219,7 @@ void ClientMain(herd_thread_params herd_params) {
     wr.wr.rdma.rkey = mstr_qp->rkey;
 
     ret = ibv_post_send(cb->conn_qp[0], &wr, &bad_send_wr);
-    CPE(ret, "ibv_post_send error", ret);
+    RAW_CHECK(ret == 0, strerror(ret));
     // printf("Client %d: sending request index %lld\n", clt_gid, nb_tx);
 
     rolling_iter++;
@@ -214,41 +228,140 @@ void ClientMain(herd_thread_params herd_params) {
   }
 }
 
+void CloverWorkerCoroutine(coro_yield_t& yield,
+                           CloverCnThreadWrapper& clover_thread, int coro,
+                           std::queue<mitsume_key>& req_queue) {
+  char buf[4096] = {0};
+  uint32_t len = 0U;
+
+  while (true) {
+    if (req_queue.empty()) {
+      clover_thread.YieldToAnotherCoro(coro, yield);
+      continue;
+    }
+    mitsume_key key = req_queue.front();
+    req_queue.pop();
+    RAW_DLOG(INFO, "coro %d read key %lu start", coro, key);
+    // will yield to other coroutines which enables concurrent reading
+    clover_thread.ReadKVPair(key, buf, &len, 4096, coro, yield);
+    RAW_DLOG(INFO, "coro %d read key %lu done", coro, key);
+  }
+}
+
+/// Main coroutine that dispatch keys in trace to different worker coroutines
+/// and report performance numbers.
+void CloverMainCoroutine(coro_yield_t& yield,
+                         CloverCnThreadWrapper& clover_thread, int thread_id,
+                         const std::vector<int>& trace,
+                         std::vector<std::queue<mitsume_key>>& req_queues) {
+  using clock = std::chrono::steady_clock;
+  constexpr size_t kReqDepth = 2;
+  size_t idx = 0;
+
+  auto start = clock::now();
+  while (true) {
+    for (auto& q : req_queues) {
+      // Refill the request queue
+      while (q.size() < kReqDepth) {
+        int raw_key = trace.at(idx++);
+        uint128 mica_k = ConvertPlainKeyToHerdKey(raw_key);
+        mitsume_key clover_k =
+            ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), 0);
+        q.push(clover_k);
+        if (idx >= trace.size()) {
+          RAW_CHECK(idx == trace.size(),
+                    "Trace index should never exceed trace size");
+          // Report performance each time the full trace is enqueued for
+          // processing
+          auto end = clock::now();
+          double sec = std::chrono::duration<double>(end - start).count();
+          RAW_LOG(INFO, "Clover thread %2d: %12.3f op/s", thread_id,
+                  trace.size() / sec);
+
+          start = clock::now();
+          idx = 0;
+        }
+      }
+    }
+    clover_thread.YieldToAnotherCoro(kMasterCoroutineIdx, yield);
+  }
+}
+
+/// Clover thread main function
+void CloverMain(CloverComputeNodeWrapper& clover_node, int clover_thread_id) {
+  using std::placeholders::_1;
+  // Use local thread id as Clover thread id
+  CloverCnThreadWrapper clover_thread(std::ref(clover_node), clover_thread_id);
+
+  RAW_LOG(INFO, "Starting Clover thread %2d", clover_thread_id);
+
+  /// Each clover thread has its own trace. Master coroutine distributes the
+  /// trace across worker coroutines.
+  std::vector<int> trace = GenerateZipfianTrace(1UL << 20, clover_thread_id,
+                                                kKeysToOffloadPerWorker);
+  /// The trace is distributed via these request queues (one for each worker).
+  std::vector<std::queue<mitsume_key>> req_queues(kCloverWorkerCoroutines);
+
+  clover_thread.RegisterCoroutine(
+      coro_call_t(std::bind(CloverMainCoroutine, _1, std::ref(clover_thread),
+                            clover_thread_id, std::ref(trace),
+                            std::ref(req_queues))),
+      kMasterCoroutineIdx);
+
+  for (int coro = 1; coro <= kCloverWorkerCoroutines; coro++) {
+    clover_thread.RegisterCoroutine(
+        coro_call_t(std::bind(CloverWorkerCoroutine, _1,
+                              std::ref(clover_thread), coro,
+                              std::ref(req_queues[coro - 1]))),
+        coro);
+  }
+
+  clover_thread.ExecuteMasterCoroutine();
+}
+
 int main(int argc, char* argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  /* Use small queues to reduce cache pressure */
-  static_assert(HRD_Q_DEPTH == 128);
 
-  /* All requests should fit into the master's request region */
-  static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
-                RR_SIZE);
-
-  /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
-  static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
-  static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
-
-  assert(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
-  assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
-
-  assert(FLAGS_herd_client_ports >= 1 && FLAGS_herd_client_ports <= 8);
-  CHECK_GE(FLAGS_threads, 1);
+  CHECK(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
+  CHECK(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
+  CHECK(FLAGS_herd_client_ports >= 1 && FLAGS_herd_client_ports <= 8);
+  // should have at least one client thread of HERD or Clover
+  CHECK_GE(FLAGS_herd_threads + FLAGS_clover_threads, 1);
   CHECK_GE(FLAGS_herd_machine_id, 0);
-  assert(FLAGS_update_percentage >= 0 && FLAGS_update_percentage <= 100);
+  CHECK_LE(FLAGS_update_percentage, 100);
 
-  /* Launch a single server thread or multiple client threads */
-  LOG(INFO) << "Using " << FLAGS_threads << " threads";
+  LOG(INFO) << "Using " << FLAGS_herd_threads << " threads for HERD and "
+            << FLAGS_clover_threads << " threads for Clover";
+  LOG(INFO) << "Using " << kCloverWorkerCoroutines
+            << " Clover worker coroutines";
+
+  CloverComputeNodeWrapper clover_node(FLAGS_clover_threads);
+  /* Since primary KVS (combined_worker) initializes connection to Clover before
+   * accepting connections from client, clients should also initializes
+   * connection to Clover first before connecting to primary KVS
+   * (combined_worker). Otherwise there will be a deadlock, since Clover
+   * initialization completes only when all Clover nodes are connected.
+   */
+  clover_node.Initialize();
+  LOG(INFO) << "Done initializing clover compute node";
+  LOG(INFO) << "Wait 10 secs for server to populate keys to Clover";
+  sleep(10);
+
   std::vector<std::thread> threads;
-
-  for (int i = 0; i < FLAGS_threads; i++) {
+  for (int i = 0; i < FLAGS_herd_threads; i++) {
     herd_thread_params param = {
-        .id = (FLAGS_herd_machine_id * FLAGS_threads) + i,
+        .id = (FLAGS_herd_machine_id * FLAGS_herd_threads) + i,
         .base_port_index = FLAGS_herd_base_port_index,
         .num_server_ports = FLAGS_herd_server_ports,
         .num_client_ports = FLAGS_herd_client_ports,
         .update_percentage = FLAGS_update_percentage,
         // Does not matter for clients. Client postlist = NUM_WORKERS
         .postlist = -1};
-    auto t = std::thread(ClientMain, param);
+    auto t = std::thread(HerdMain, param);
+    threads.emplace_back(std::move(t));
+  }
+  for (int i = 0; i < FLAGS_clover_threads; i++) {
+    auto t = std::thread(std::thread(CloverMain, std::ref(clover_node), i));
     threads.emplace_back(std::move(t));
   }
 

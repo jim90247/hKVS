@@ -10,9 +10,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "clover/mitsume.h"
-#include "clover/mitsume_clt_test.h"
-#include "clover/mitsume_clt_thread.h"
 #include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
@@ -105,17 +102,6 @@ void WorkerMain(herd_thread_params herd_params,
   // Use HERD local id as Clover thread id
   CloverCnThreadWrapper clover_thread(std::ref(clover_node), herd_params.id);
 
-  /*
-   * MICA-related checks. Note that @postlist is the largest batch size we
-   * feed into MICA. The average postlist per port in a dual-port NIC should
-   * be @postlist / 2.
-   */
-  assert(MICA_MAX_BATCH_SIZE >= postlist);
-  static_assert(HERD_VALUE_SIZE <= MICA_MAX_VALUE);
-
-  assert(UNSIG_BATCH >= postlist); /* Postlist check */
-  assert(postlist <= NUM_CLIENTS); /* Static sizing of arrays below */
-
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
@@ -123,7 +109,6 @@ void WorkerMain(herd_thread_params herd_params,
   CloverLookupTable clover_lookup_table;
   PopulateDataNode(clover_thread, wrkr_lid, &kv, clover_lookup_table);
 
-  assert(num_server_ports < MAX_SERVER_PORTS); /* Avoid dynamic alloc */
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
 
   // Create queue pairs for SEND responses for each server ports
@@ -141,9 +126,9 @@ void WorkerMain(herd_thread_params herd_params,
   /* Map the request region created by the master */
   volatile mica_op *req_buf;
   int sid = shmget(MASTER_SHM_KEY, RR_SIZE, SHM_HUGETLB | 0666);
-  assert(sid != -1);
+  RAW_CHECK(sid != -1, "shmget failed");
   req_buf = static_cast<volatile mica_op *>(shmat(sid, 0, 0));
-  assert(req_buf != (void *)-1);
+  RAW_CHECK(req_buf != (void *)-1, "shmat failed");
 
   /* Create an address handle for each client */
   ibv_ah *ah[NUM_CLIENTS];
@@ -180,7 +165,7 @@ void WorkerMain(herd_thread_params herd_params,
     };
 
     ah[i] = ibv_create_ah(cb[cb_i]->pd, &ah_attr);
-    assert(ah[i] != nullptr);
+    RAW_CHECK(ah[i] != nullptr, "ibv_create_ah failed");
   }
 
   RAW_LOG(INFO, "Finish HERD worker setup");
@@ -224,7 +209,6 @@ void WorkerMain(herd_thread_params herd_params,
   // index of client
   int clt_i = -1;
   int poll_i, wr_i;
-  assert(NUM_CLIENTS % num_server_ports == 0);
 
   timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -280,8 +264,9 @@ void WorkerMain(herd_thread_params herd_params,
 
       /* Convert to a MICA opcode */
       req_buf[req_offset].opcode -= HERD_MICA_OFFSET;
-      // assert(req_buf[req_offset].opcode == MICA_OP_GET ||	/* XXX */
-      //		req_buf[req_offset].opcode == MICA_OP_PUT);
+      RAW_DCHECK(req_buf[req_offset].opcode == MICA_OP_GET ||
+                     req_buf[req_offset].opcode == MICA_OP_PUT,
+                 "Unknown MICA opcode");
 
       op_ptr_arr[wr_i] = const_cast<mica_op *>(&req_buf[req_offset]);
 
@@ -391,24 +376,20 @@ void WorkerMain(herd_thread_params herd_params,
 
 int main(int argc, char *argv[]) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
-  FLAGS_clover_memcached_ip.copy(MEMCACHED_IP, sizeof(MEMCACHED_IP));
-  MITSUME_CLT_NUM = FLAGS_clover_cn;
-  MITSUME_MEM_NUM = FLAGS_clover_dn;
 
-  /* Use small queues to reduce cache pressure */
-  static_assert(HRD_Q_DEPTH == 128);
+  CHECK(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
+  CHECK(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
+  CHECK_GE(FLAGS_postlist, 1);
+  CHECK_LT(FLAGS_herd_server_ports, MAX_SERVER_PORTS);
+  CHECK(NUM_CLIENTS % FLAGS_herd_server_ports == 0);
 
-  /* All requests should fit into the master's request region */
-  static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
-                RR_SIZE);
+  /// MICA-related checks. Note that postlist is the largest batch size we feed
+  /// into MICA. The average postlist per port in a dual-port NIC should be
+  /// postlist / 2.
+  CHECK(MICA_MAX_BATCH_SIZE >= FLAGS_postlist);
 
-  /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
-  static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
-  static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
-
-  assert(FLAGS_base_port_index >= 0 && FLAGS_base_port_index <= 8);
-  assert(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
-  assert(FLAGS_postlist >= 1);
+  CHECK(UNSIG_BATCH >= FLAGS_postlist); /* Postlist check */
+  CHECK(FLAGS_postlist <= NUM_CLIENTS); /* Static sizing of arrays below */
 
   LOG(INFO) << "Using " << NUM_WORKERS << " worker threads";
   LOG(INFO) << "Expecting " << NUM_CLIENTS << " client threads in total";
@@ -425,7 +406,7 @@ int main(int argc, char *argv[]) {
         .base_port_index = FLAGS_herd_base_port_index,
         .num_server_ports = FLAGS_herd_server_ports,
         .num_client_ports = -1,   // does not matter for worker
-        .update_percentage = -1,  // does not matter for worker
+        .update_percentage = 0U,  // does not matter for worker
         .postlist = FLAGS_postlist};
     auto t = std::thread(WorkerMain, param, std::ref(clover_node));
     threads.emplace_back(std::move(t));

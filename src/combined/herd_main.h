@@ -1,7 +1,8 @@
 #include <cstdint>
 
-#include "mica/mica.h"
 #include "clover/mitsume_struct.h"
+#include "libhrd/hrd.h"
+#include "mica/mica.h"
 
 /*
  * The polling logic in HERD requires the following:
@@ -32,7 +33,8 @@ constexpr int HERD_PUT_REQ_SIZE = 16 + 1 + 1 + HERD_VALUE_SIZE;
 /* Configuration options */
 constexpr int MAX_SERVER_PORTS = 4;
 constexpr int NUM_WORKERS = 8;
-constexpr int NUM_CLIENTS = 16;
+/// Total number of HERD client threads.
+constexpr int NUM_CLIENTS = 8;
 
 /* Performance options */
 constexpr int WINDOW_SIZE = 32; /* Outstanding requests kept by each client */
@@ -53,9 +55,22 @@ struct herd_thread_params {
   int base_port_index;
   int num_server_ports;
   int num_client_ports;
-  int update_percentage;
+  uint32_t update_percentage;
   int postlist;
 };
+
+/* Use small queues to reduce cache pressure */
+static_assert(HRD_Q_DEPTH == 128);
+
+/* All requests should fit into the master's request region */
+static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+              RR_SIZE);
+
+/* Unsignaled completion checks. worker.c does its own check w/ @postlist */
+static_assert(UNSIG_BATCH >= WINDOW_SIZE); /* Pipelining check for clients */
+static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
+
+static_assert(HERD_VALUE_SIZE <= MICA_MAX_VALUE);
 
 /* NOTE: the max key storage in Clover is likely not large enough to
  * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.
@@ -86,11 +101,22 @@ constexpr int kKeysToOffloadPerWorker = 10000;
  * Clover by replacing the lowest 8 bits with the worker thread id.
  *
  * @param herd_key the key used in HERD
- * @param tid the id of HERD worke thread
+ * @param tid the id of HERD worker thread
  * @return the corresponding key to query in Clover
  */
 inline mitsume_key ConvertHerdKeyToCloverKey(mica_key *herd_key, uint8_t tid) {
   mitsume_key clover_key = reinterpret_cast<uint64 *>(herd_key)[1];
   clover_key &= ~((1UL << 8) - 1UL);  // mask out lowest 8 bits
   return (clover_key | tid);
+}
+
+/**
+ * @brief Converts plain-text keys to HERD key hash.
+ *
+ * @param plain_key the plain-text key which is a number in range [0,
+ * HERD_NUM_KEYS)
+ * @return the HERD key hash
+ */
+inline uint128 ConvertPlainKeyToHerdKey(int plain_key) {
+  return CityHash128_High64((char *)&plain_key, sizeof(int));
 }

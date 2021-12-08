@@ -18,13 +18,17 @@ export MLX4_SINGLE_THREADED=1
 
 [ "$#" -eq 1 ] || abort_exec "Illegal number of parameters."
 
-num_threads=16 # Threads per client machine
-show_message "Running $num_threads client threads"
-
 sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
 	--herd_base_port_index 0 \
-	--threads $num_threads \
+	--herd_threads 8 \
 	--update_percentage 5 \
 	--zipfian_alpha 0.99 \
-	--herd_machine_id "$1"
+	--herd_machine_id "$1" \
+	--clover_machine_id 2 \
+	--clover_ib_dev 1 \
+	--clover_ib_port 1 \
+	--clover_cn 2 \
+	--clover_dn 1 \
+	--clover_threads 8 \
+	--clover_memcached_ip "$HRD_REGISTRY_IP"
