@@ -14,6 +14,8 @@
 #include "mica/mica.h"
 #include "util/zipfian_generator.h"
 
+using CoroRequestQueue = std::queue<mitsume_key>;
+
 constexpr int DGRAM_BUF_SIZE = 4096;
 constexpr int kCloverWorkerCoroutines = 4;
 // Clover coroutines + master coroutine
@@ -230,7 +232,7 @@ void HerdMain(herd_thread_params herd_params) {
 
 void CloverWorkerCoroutine(coro_yield_t& yield,
                            CloverCnThreadWrapper& clover_thread, int coro,
-                           std::queue<mitsume_key>& req_queue) {
+                           CoroRequestQueue& req_queue) {
   char buf[4096] = {0};
   uint32_t len = 0U;
 
@@ -249,38 +251,33 @@ void CloverWorkerCoroutine(coro_yield_t& yield,
 }
 
 /// Main coroutine that dispatch keys in trace to different worker coroutines
-/// and report performance numbers.
+/// via a shared request queue and report performance numbers.
 void CloverMainCoroutine(coro_yield_t& yield,
                          CloverCnThreadWrapper& clover_thread, int thread_id,
                          const std::vector<int>& trace,
-                         std::vector<std::queue<mitsume_key>>& req_queues) {
+                         CoroRequestQueue& req_queue) {
   using clock = std::chrono::steady_clock;
-  constexpr size_t kReqDepth = 2;
+  constexpr size_t kReqDepth = 2 * kCloverWorkerCoroutines;
   size_t idx = 0;
 
   auto start = clock::now();
   while (true) {
-    for (auto& q : req_queues) {
-      // Refill the request queue
-      while (q.size() < kReqDepth) {
-        int raw_key = trace.at(idx++);
-        uint128 mica_k = ConvertPlainKeyToHerdKey(raw_key);
-        mitsume_key clover_k =
-            ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), 0);
-        q.push(clover_k);
-        if (idx >= trace.size()) {
-          RAW_CHECK(idx == trace.size(),
-                    "Trace index should never exceed trace size");
-          // Report performance each time the full trace is enqueued for
-          // processing
-          auto end = clock::now();
-          double sec = std::chrono::duration<double>(end - start).count();
-          RAW_LOG(INFO, "Clover thread %2d: %12.3f op/s", thread_id,
-                  trace.size() / sec);
+    while (req_queue.size() < kReqDepth) {
+      int raw_key = trace.at(idx++);
+      uint128 mica_k = ConvertPlainKeyToHerdKey(raw_key);
+      mitsume_key clover_k =
+          ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), 0);
+      req_queue.push(clover_k);
+      if (idx >= trace.size()) {
+        // Report performance each time the full trace is enqueued for
+        // processing
+        auto end = clock::now();
+        double sec = std::chrono::duration<double>(end - start).count();
+        RAW_LOG(INFO, "Clover thread %2d: %12.3f op/s", thread_id,
+                trace.size() / sec);
 
-          start = clock::now();
-          idx = 0;
-        }
+        start = clock::now();
+        idx = 0;
       }
     }
     clover_thread.YieldToAnotherCoro(kMasterCoroutineIdx, yield);
@@ -299,20 +296,23 @@ void CloverMain(CloverComputeNodeWrapper& clover_node, int clover_thread_id) {
   /// trace across worker coroutines.
   std::vector<int> trace = GenerateZipfianTrace(1UL << 20, clover_thread_id,
                                                 kKeysToOffloadPerWorker);
-  /// The trace is distributed via these request queues (one for each worker).
-  std::vector<std::queue<mitsume_key>> req_queues(kCloverWorkerCoroutines);
+  /// The trace is distributed via this request queue (shared between workers).
+  /// Since any two coroutines will not be executed at the same time, there
+  /// won't have race conditions when multiple coroutines uses the same request
+  /// queue.
+  CoroRequestQueue req_queue;
 
   clover_thread.RegisterCoroutine(
       coro_call_t(std::bind(CloverMainCoroutine, _1, std::ref(clover_thread),
                             clover_thread_id, std::ref(trace),
-                            std::ref(req_queues))),
+                            std::ref(req_queue))),
       kMasterCoroutineIdx);
 
   for (int coro = 1; coro <= kCloverWorkerCoroutines; coro++) {
     clover_thread.RegisterCoroutine(
         coro_call_t(std::bind(CloverWorkerCoroutine, _1,
                               std::ref(clover_thread), coro,
-                              std::ref(req_queues[coro - 1]))),
+                              std::ref(req_queue))),
         coro);
   }
 
