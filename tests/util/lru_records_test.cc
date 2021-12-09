@@ -19,7 +19,6 @@ TEMPLATE_TEST_CASE("LRU records (integer types)", "[lru_record]", int, long,
     REQUIRE(records.Contain(0));
     REQUIRE(records.Contain(123));
     REQUIRE(records.Contain(1));
-    REQUIRE_FALSE(records.Contain(2));
     REQUIRE_FALSE(rec.has_value());
   }
 
@@ -33,7 +32,6 @@ TEMPLATE_TEST_CASE("LRU records (integer types)", "[lru_record]", int, long,
     REQUIRE(records.Contain(3));
     REQUIRE(records.Contain(4));
     REQUIRE_FALSE(records.Contain(2));
-    REQUIRE_FALSE(records.Contain(5));
     REQUIRE(rec.value() == 2);
   }
 }
