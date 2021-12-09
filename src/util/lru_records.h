@@ -1,5 +1,6 @@
 #pragma once
 #include <list>
+#include <optional>
 #include <unordered_map>
 
 template <typename Record>
@@ -19,8 +20,9 @@ class LruRecords {
    * to meet the capacity restriction.
    *
    * @param record the record
+   * @return the removed record
    */
-  inline void Put(const Record &record) {
+  inline std::optional<Record> Put(const Record &record) {
     auto it = map_.find(record);
     if (it != map_.end()) {
       // remove old copy
@@ -31,8 +33,12 @@ class LruRecords {
     map_[record] = items_.begin();
     if (items_.size() > capacity_) {
       ListIterator last = std::prev(items_.end());
+      Record popped = *last;
       map_.erase(*last);
       items_.pop_back();
+      return std::make_optional(popped);
+    } else {
+      return std::nullopt;
     }
   }
   /**
