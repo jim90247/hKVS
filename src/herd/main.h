@@ -29,7 +29,7 @@
 /* Configuration options */
 #define MAX_SERVER_PORTS 4
 #define NUM_WORKERS 8
-#define NUM_CLIENTS 16
+#define NUM_CLIENTS 8
 
 /* Performance options */
 #define WINDOW_SIZE 32 /* Outstanding requests kept by each client */
