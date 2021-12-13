@@ -210,6 +210,9 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
 
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
 
+  // Request queue producer token for this worker thread
+  moodycamel::ProducerToken ptok(req_queue);
+
   // Create queue pairs for SEND responses for each server ports
   for (i = 0; i < num_server_ports; i++) {
     int ib_port_index = base_port_index + i;
@@ -436,7 +439,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
             wrkr_lid,                   // from
             true                        // need_reply
         };
-        while (!req_queue.try_enqueue(req))
+        while (!req_queue.try_enqueue(ptok, req))
           ;
         CloverResponse resp;
         while (!resp_queue_ptr->try_dequeue(resp))
