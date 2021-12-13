@@ -28,6 +28,8 @@ DEFINE_int32(postlist, 1,
 DEFINE_int32(clover_threads, 4, "Number of clover worker threads");
 DEFINE_int32(clover_coros, 1,
              "Number of worker coroutines in each Clover thread");
+DEFINE_bool(clover_blocking, false,
+            "Wait for Clover request comple before continuing");
 
 using CloverRequestIdType = uint32_t;
 
@@ -326,6 +328,10 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
           wrkr_lid, M_4 / seconds, (double)nb_tx_tot / nb_post_send,
           (double)kv.num_get_fail / kv.num_get_op,
           num_clover_updates / seconds);
+      if (wrkr_lid == 0) {
+        RAW_LOG(INFO, "Approximated pending requests = %lu",
+                req_queue.size_approx());
+      }
 
       rolling_iter = 0;
       nb_tx_tot = 0;
@@ -437,12 +443,12 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
             0,                          // id
             CloverRequestType::kWrite,  // type
             wrkr_lid,                   // from
-            true                        // need_reply
+            FLAGS_clover_blocking       // need_reply
         };
         while (!req_queue.try_enqueue(ptok, req))
           ;
         CloverResponse resp;
-        while (!resp_queue_ptr->try_dequeue(resp))
+        while (FLAGS_clover_blocking && !resp_queue_ptr->try_dequeue(resp))
           ;
         // error will be reported in Clover worker coroutine
         num_clover_updates++;
