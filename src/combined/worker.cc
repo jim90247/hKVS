@@ -25,7 +25,7 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(postlist, 1,
              "Post list size (max # of requests in ibv_post_send)");
 
-DEFINE_int32(clover_threads, 1, "Number of clover worker threads");
+DEFINE_int32(clover_threads, 4, "Number of clover worker threads");
 DEFINE_int32(clover_coros, 1,
              "Number of worker coroutines in each Clover thread");
 
