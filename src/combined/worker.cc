@@ -37,17 +37,12 @@ DEFINE_int32(postlist, 1,
  * keys to differentiate keys from different worker threads
  * @param[in] kv MICA KV store
  * @param[out] lookup_table the lookup table storing what keys are in Clover
- * @note Concurrent calls to this function will be serialized
  */
 void PopulateDataNode(SharedRequestQueue &req_queue,
                       moodycamel::ProducerToken &ptok,
                       std::shared_ptr<SharedResponseQueue> resp_queue_ptr,
                       int worker_id, mica_kv *kv,
                       CloverLookupTable &lookup_table) {
-  static std::mutex mutex;
-  // Ensure this function is executed by only one thread at a time
-  const std::lock_guard<std::mutex> lock(mutex);
-
   mica_key *mica_keys =
       reinterpret_cast<mica_key *>(mica_gen_keys(kKeysToOffloadPerWorker));
   mica_op **read_requests_ptr = new mica_op *[kKeysToOffloadPerWorker];
