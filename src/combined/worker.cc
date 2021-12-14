@@ -2,6 +2,7 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
+#include <moodycamel/concurrentqueue.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "clover_worker.h"
 #include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
@@ -27,20 +29,20 @@ DEFINE_int32(postlist, 1,
 /**
  * @brief Copies frequently accessed KV pairs in MICA to Clover data node.
  *
- * @param[in] clover_thread_metadata the metadata of the corresponding worker
- * thread
+ * @param[in,out] req_queue the Clover request queue
+ * @param[in] ptok the producer token of Clover request queue
+ * @param[in, out] resp_queue_ptr the pointer to the clover response queue for
+ * this worker
  * @param[in] worker_id the worker thread id which will be used for tagging MICA
  * keys to differentiate keys from different worker threads
  * @param[in] kv MICA KV store
  * @param[out] lookup_table the lookup table storing what keys are in Clover
- * @note Concurrent calls to this function will be serialized
  */
-void PopulateDataNode(CloverCnThreadWrapper &clover_thread, int worker_id,
-                      mica_kv *kv, CloverLookupTable &lookup_table) {
-  static std::mutex mutex;
-  // Ensure this function is executed by only one thread at a time
-  const std::lock_guard<std::mutex> lock(mutex);
-
+void PopulateDataNode(SharedRequestQueue &req_queue,
+                      moodycamel::ProducerToken &ptok,
+                      std::shared_ptr<SharedResponseQueue> resp_queue_ptr,
+                      int worker_id, mica_kv *kv,
+                      CloverLookupTable &lookup_table) {
   mica_key *mica_keys =
       reinterpret_cast<mica_key *>(mica_gen_keys(kKeysToOffloadPerWorker));
   mica_op **read_requests_ptr = new mica_op *[kKeysToOffloadPerWorker];
@@ -69,13 +71,21 @@ void PopulateDataNode(CloverCnThreadWrapper &clover_thread, int worker_id,
     }
     mitsume_key clover_key =
         ConvertHerdKeyToCloverKey(mica_keys + i, worker_id);
-    int rc = clover_thread.InsertKVPair(clover_key, read_results[i].val_ptr,
-                                        read_results[i].val_len);
-    if (rc) {
-      RAW_LOG(FATAL,
-              "Failed to insert %d-th key (%lx) to Clover (return code = %d)",
-              i, clover_key, rc);
-    }
+    CloverRequest req{
+        clover_key,                           // key
+        read_results[i].val_ptr,              // buf
+        read_results[i].val_len,              // len
+        static_cast<CloverRequestIdType>(i),  // id
+        CloverRequestType::kInsert,           // type
+        worker_id,                            // from
+        true                                  // need_reply
+    };
+    while (!req_queue.try_enqueue(ptok, req))
+      ;
+    CloverResponse resp;
+    while (!resp_queue_ptr->try_dequeue(resp))
+      ;
+    // error will be reported in Clover worker coroutine
     lookup_table.insert(clover_key);
   }
 
@@ -91,23 +101,28 @@ void PopulateDataNode(CloverCnThreadWrapper &clover_thread, int worker_id,
           kKeysToOffloadPerWorker);
 }
 
-void WorkerMain(herd_thread_params herd_params,
-                CloverComputeNodeWrapper &clover_node) {
+void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
+                std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
   int i, ret;
   int wrkr_lid = herd_params.id; /* Local ID of this worker thread*/
   int num_server_ports = herd_params.num_server_ports;
   int base_port_index = herd_params.base_port_index;
   int postlist = herd_params.postlist;
 
-  // Use HERD local id as Clover thread id
-  CloverCnThreadWrapper clover_thread(std::ref(clover_node), herd_params.id);
+  // Request queue producer token for this worker thread
+  moodycamel::ProducerToken ptok(req_queue);
+  // Clover request buffer
+  vector<CloverRequest> clover_req_buf(MICA_MAX_BATCH_SIZE);
+  // Clover response buffer
+  CloverResponse clover_resp_buf[MICA_MAX_BATCH_SIZE];
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
   mica_populate_fixed_len(&kv, HERD_NUM_KEYS, HERD_VALUE_SIZE);
   CloverLookupTable clover_lookup_table;
-  PopulateDataNode(clover_thread, wrkr_lid, &kv, clover_lookup_table);
+  PopulateDataNode(req_queue, ptok, resp_queue_ptr, wrkr_lid, &kv,
+                   clover_lookup_table);
 
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
 
@@ -224,6 +239,10 @@ void WorkerMain(herd_thread_params herd_params,
           wrkr_lid, M_4 / seconds, (double)nb_tx_tot / nb_post_send,
           (double)kv.num_get_fail / kv.num_get_op,
           num_clover_updates / seconds);
+      if (wrkr_lid == 0) {
+        RAW_LOG(INFO, "Approximated pending requests = %lu",
+                req_queue.size_approx());
+      }
 
       rolling_iter = 0;
       nb_tx_tot = 0;
@@ -319,6 +338,7 @@ void WorkerMain(herd_thread_params herd_params,
 
     // We may insert mirroring/invalidation operations (Clover compute node)
     // here.
+    int clover_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
       if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
@@ -328,14 +348,30 @@ void WorkerMain(herd_thread_params herd_params,
         if (clover_lookup_table.find(key) == clover_lookup_table.end()) {
           continue;
         }
-        int rc = clover_thread.WriteKVPair(key, op_ptr_arr[i]->value,
-                                           op_ptr_arr[i]->val_len);
-        if (rc) {
-          RAW_LOG_FATAL("Clover write failed: key=%lx, code=%d", key, rc);
-        }
-        num_clover_updates++;
+
+        clover_req_buf[clover_req_cnt] = CloverRequest{
+            key,                                        // key
+            op_ptr_arr[i]->value,                       // buf
+            op_ptr_arr[i]->val_len,                     // len
+            static_cast<unsigned int>(clover_req_cnt),  // id
+            CloverRequestType::kWrite,                  // type
+            wrkr_lid,                                   // from
+            FLAGS_clover_blocking                       // need_reply
+        };
+        clover_req_cnt++;
       }
     }
+
+    while (!req_queue.try_enqueue_bulk(
+        ptok, std::make_move_iterator(clover_req_buf.begin()), clover_req_cnt))
+      ;
+    int clover_comps = 0;
+    while (FLAGS_clover_blocking && clover_comps < clover_req_cnt) {
+      clover_comps += resp_queue_ptr->try_dequeue_bulk(
+          clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
+    }
+    // error will be reported in Clover worker coroutine
+    num_clover_updates += clover_req_cnt;
 
     /*
      * Fill in the computed @val_ptr's. For non-postlist mode, this loop
@@ -391,13 +427,24 @@ int main(int argc, char *argv[]) {
   CHECK(UNSIG_BATCH >= FLAGS_postlist); /* Postlist check */
   CHECK(FLAGS_postlist <= NUM_CLIENTS); /* Static sizing of arrays below */
 
-  LOG(INFO) << "Using " << NUM_WORKERS << " worker threads";
+  LOG(INFO) << "Using " << NUM_WORKERS << " HERD worker threads and "
+            << FLAGS_clover_threads << " Clover worker threads";
   LOG(INFO) << "Expecting " << NUM_CLIENTS << " client threads in total";
 
   // Setup Clover compute node
   CloverComputeNodeWrapper clover_node(NUM_WORKERS);
   clover_node.Initialize();
   LOG(INFO) << "Done initializing clover compute node";
+
+  SharedRequestQueue clover_req_queue(2 * MICA_MAX_BATCH_SIZE, NUM_WORKERS, 0);
+  std::vector<std::shared_ptr<SharedResponseQueue>> clover_resp_queues;
+  // using clover_resp_queues(NUM_WORKERS,
+  // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
+  // pointing to the same queue
+  for (int i = 0; i < NUM_WORKERS; i++) {
+    clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
+        2 * MICA_MAX_BATCH_SIZE, 0, FLAGS_clover_threads));
+  }
 
   std::vector<std::thread> threads;
   for (int i = 0; i < NUM_WORKERS; i++) {
@@ -408,7 +455,15 @@ int main(int argc, char *argv[]) {
         .num_client_ports = -1,   // does not matter for worker
         .update_percentage = 0U,  // does not matter for worker
         .postlist = FLAGS_postlist};
-    auto t = std::thread(WorkerMain, param, std::ref(clover_node));
+    auto t = std::thread(WorkerMain, param, std::ref(clover_req_queue),
+                         clover_resp_queues.at(i));
+    threads.emplace_back(std::move(t));
+  }
+
+  for (int i = 0; i < FLAGS_clover_threads; i++) {
+    auto t = std::thread(CloverThreadMain, std::ref(clover_node),
+                         std::ref(clover_req_queue),
+                         std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }
 

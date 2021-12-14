@@ -1,7 +1,20 @@
+# cameron314/concurrentqueue
+find_package(concurrentqueue)
+
+set(COMBINED_COMMON_LIB
+  gflags
+  glog
+  mitsume
+  clover_wrapper
+)
+
+add_library(combined_clover_worker clover_worker.h clover_worker.cc)
+target_link_libraries(combined_clover_worker ${COMBINED_COMMON_LIB} concurrentqueue::concurrentqueue)
+
 add_executable(combined_worker worker.cc herd_main.h)
-target_link_libraries(combined_worker mica mitsume glog libhrd gflags clover_wrapper)
+target_link_libraries(combined_worker ${COMBINED_COMMON_LIB} mica libhrd combined_clover_worker)
 
 add_executable(combined_client client.cc herd_main.h)
-target_link_libraries(combined_client mica mitsume glog libhrd gflags zipfian clover_wrapper)
+target_link_libraries(combined_client ${COMBINED_COMMON_LIB} mica libhrd zipfian)
 
 install(TARGETS combined_worker combined_client)
