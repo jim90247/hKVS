@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "clover_worker.h"
 #include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
@@ -24,35 +25,6 @@ DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(postlist, 1,
              "Post list size (max # of requests in ibv_post_send)");
-
-DEFINE_int32(clover_threads, 4, "Number of clover worker threads");
-DEFINE_int32(clover_coros, 1,
-             "Number of worker coroutines in each Clover thread");
-DEFINE_bool(clover_blocking, false,
-            "Wait for Clover request comple before continuing");
-
-using CloverRequestIdType = uint32_t;
-
-enum class CloverRequestType { kInsert, kWrite };
-
-struct CloverRequest {
-  mitsume_key key;
-  void *buf;
-  int len;
-  CloverRequestIdType id;
-  CloverRequestType type;
-  int from;
-  bool need_reply;
-};
-
-struct CloverResponse {
-  CloverRequestIdType id;
-};
-
-// Multi-threaded request queue
-using SharedRequestQueue = moodycamel::ConcurrentQueue<CloverRequest>;
-// Multi-threaded response queue
-using SharedResponseQueue = moodycamel::ConcurrentQueue<CloverResponse>;
 
 /**
  * @brief Copies frequently accessed KV pairs in MICA to Clover data node.
@@ -132,68 +104,6 @@ void PopulateDataNode(SharedRequestQueue &req_queue,
 
   RAW_LOG(INFO, "Worker %d finish inserting %d keys into Clover.", worker_id,
           kKeysToOffloadPerWorker);
-}
-
-void CloverWorkerCoro(
-    coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
-    SharedRequestQueue &req_queue,
-    std::vector<std::shared_ptr<SharedResponseQueue>> &resp_queues,
-    moodycamel::ConsumerToken &ctok, int coro) {
-  CloverRequest req;
-  while (true) {
-    if (req_queue.try_dequeue(ctok, req)) {
-      int rc = MITSUME_SUCCESS;
-      switch (req.type) {
-        case CloverRequestType::kInsert:
-          rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
-          break;
-        case CloverRequestType::kWrite:
-          rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
-          break;
-      }
-      if (rc != MITSUME_SUCCESS) {
-        RAW_LOG(FATAL, "Operation %d failed: key=%lu, rc=%d",
-                static_cast<int>(req.type), req.key, rc);
-      }
-      if (req.need_reply) {
-        while (!resp_queues.at(req.from)->try_enqueue(CloverResponse{req.id})) {
-          cn_thread.YieldToAnotherCoro(coro, yield);
-        }
-      }
-    }
-    cn_thread.YieldToAnotherCoro(coro, yield);
-  }
-}
-
-void CloverMainCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread) {
-  while (true) {
-    cn_thread.YieldToAnotherCoro(kMasterCoroutineIdx, yield);
-  }
-}
-
-void CloverMain(CloverComputeNodeWrapper &clover_node,
-                SharedRequestQueue &req_queue,
-                std::vector<std::shared_ptr<SharedResponseQueue>> &resp_queues,
-                int clover_thread_id) {
-  using std::placeholders::_1;
-  CloverCnThreadWrapper clover_thread(std::ref(clover_node), clover_thread_id);
-  // coroutines in same thread share the same consumer token
-  moodycamel::ConsumerToken ctok(req_queue);
-
-  // dummy main coroutine
-  clover_thread.RegisterCoroutine(
-      coro_call_t(std::bind(CloverMainCoro, _1, std::ref(clover_thread))),
-      kMasterCoroutineIdx);
-
-  for (int coro = 1; coro <= FLAGS_clover_coros; coro++) {
-    clover_thread.RegisterCoroutine(
-        coro_call_t(std::bind(CloverWorkerCoro, _1, std::ref(clover_thread),
-                              std::ref(req_queue), std::ref(resp_queues),
-                              std::ref(ctok), coro)),
-        coro);
-  }
-
-  clover_thread.ExecuteMasterCoroutine();
 }
 
 void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
@@ -534,11 +444,11 @@ int main(int argc, char *argv[]) {
   SharedRequestQueue clover_req_queue(2 * MICA_MAX_BATCH_SIZE, NUM_WORKERS, 0);
   std::vector<std::shared_ptr<SharedResponseQueue>> clover_resp_queues;
   // using clover_resp_queues(NUM_WORKERS,
-  // std::make_shared<SharedResponseQueue>(1024)) will create multiple pointers
+  // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
   // pointing to the same queue
   for (int i = 0; i < NUM_WORKERS; i++) {
-    clover_resp_queues.emplace_back(
-        std::make_shared<SharedResponseQueue>(1024));
+    clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
+        2 * MICA_MAX_BATCH_SIZE, 0, FLAGS_clover_threads));
   }
 
   std::vector<std::thread> threads;
@@ -556,9 +466,9 @@ int main(int argc, char *argv[]) {
   }
 
   for (int i = 0; i < FLAGS_clover_threads; i++) {
-    auto t = std::thread(CloverMain, std::ref(clover_node),
+    auto t = std::thread(CloverThreadMain, std::ref(clover_node),
                          std::ref(clover_req_queue),
-                         std::ref(clover_resp_queues), i);
+                         std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }
 
