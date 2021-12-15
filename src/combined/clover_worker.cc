@@ -23,11 +23,12 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
           rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
           break;
         case CloverRequestType::kWrite:
+        case CloverRequestType::kInvalidate:
           rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
           break;
       }
       if (rc != MITSUME_SUCCESS) {
-        RAW_LOG(FATAL, "Operation %d failed: key=%lu, rc=%d",
+        RAW_LOG(FATAL, "Operation %d failed: key=%lx, rc=%d",
                 static_cast<int>(req.type), req.key, rc);
       }
       if (req.need_reply) {

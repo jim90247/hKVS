@@ -16,6 +16,7 @@
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
+#include "util/lru_records.h"
 
 // The type of secondary KVS lookup table
 using CloverLookupTable = std::unordered_set<mitsume_key>;
@@ -26,79 +27,37 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(postlist, 1,
              "Post list size (max # of requests in ibv_post_send)");
 
+DEFINE_uint64(lru_size, 8192, "Size of LRU record");
+DEFINE_uint64(lru_window, 65536, "Size of LRU window");
+DEFINE_int32(lru_min_count, 4,
+             "Minimum amount of appearance to be placed in LRU");
+
 /**
- * @brief Copies frequently accessed KV pairs in MICA to Clover data node.
+ * @brief Adds a new Clover request into request buffer and updates the request
+ * counter.
  *
- * @param[in,out] req_queue the Clover request queue
- * @param[in] ptok the producer token of Clover request queue
- * @param[in, out] resp_queue_ptr the pointer to the clover response queue for
- * this worker
- * @param[in] worker_id the worker thread id which will be used for tagging MICA
- * keys to differentiate keys from different worker threads
- * @param[in] kv MICA KV store
- * @param[out] lookup_table the lookup table storing what keys are in Clover
+ * If a request with same key exists in request buffer, that request is replaced
+ * with the new one. Otherwise the new request is appended to the end of the
+ * request buffer, and the request counter is incremented.
+ *
+ * @param[in,out] reqs the request buffer
+ * @param[in,out] req_cnt the request counter
+ * @param[in] req the new request
  */
-void PopulateDataNode(SharedRequestQueue &req_queue,
-                      moodycamel::ProducerToken &ptok,
-                      std::shared_ptr<SharedResponseQueue> resp_queue_ptr,
-                      int worker_id, mica_kv *kv,
-                      CloverLookupTable &lookup_table) {
-  mica_key *mica_keys =
-      reinterpret_cast<mica_key *>(mica_gen_keys(kKeysToOffloadPerWorker));
-  mica_op **read_requests_ptr = new mica_op *[kKeysToOffloadPerWorker];
-  mica_resp *read_results = new mica_resp[kKeysToOffloadPerWorker]();
-
-  RAW_DLOG(INFO, "Worker %d start inserting %d keys into Clover.", worker_id,
-           kKeysToOffloadPerWorker);
-
-  for (size_t i = 0; i < kKeysToOffloadPerWorker; i++) {
-    read_requests_ptr[i] = new mica_op{.key = mica_keys[i],
-                                       .opcode = MICA_OP_GET,
-                                       // don't care for GET requests
-                                       .val_len = 0,
-                                       .value = {0}};
-  }
-  for (int i = 0; i < kKeysToOffloadPerWorker; i += MICA_MAX_BATCH_SIZE) {
-    int batch_size = std::min(kKeysToOffloadPerWorker - i, MICA_MAX_BATCH_SIZE);
-    mica_batch_op(kv, batch_size, read_requests_ptr + i, read_results + i);
-  }
-  for (int i = 0; i < kKeysToOffloadPerWorker; i++) {
-    if (read_results[i].type == MICA_RESP_GET_FAIL) {
-      // Perhaps these keys were evicted
-      RAW_DLOG(WARNING, "Skipping key %d (%lx): not found in MICA", i,
-               ((uint64_t *)&read_requests_ptr[i]->key)[1]);
-      continue;
+inline void AddNewCloverReq(std::vector<CloverRequest> &reqs,
+                            unsigned int &req_cnt, const CloverRequest &req) {
+  unsigned int req_idx = req_cnt;
+  // overwrite previous requests in current batch with the same key
+  for (unsigned int i = 0; i < req_cnt; i++) {
+    if (reqs[i].key == req.key) {
+      req_idx = i;
+      break;
     }
-    mitsume_key clover_key =
-        ConvertHerdKeyToCloverKey(mica_keys + i, worker_id);
-    CloverRequest req{
-        clover_key,                           // key
-        read_results[i].val_ptr,              // buf
-        read_results[i].val_len,              // len
-        static_cast<CloverRequestIdType>(i),  // id
-        CloverRequestType::kInsert,           // type
-        worker_id,                            // from
-        true                                  // need_reply
-    };
-    while (!req_queue.try_enqueue(ptok, req))
-      ;
-    CloverResponse resp;
-    while (!resp_queue_ptr->try_dequeue(resp))
-      ;
-    // error will be reported in Clover worker coroutine
-    lookup_table.insert(clover_key);
   }
-
-  // Clean-up buffers
-  free(mica_keys);
-  for (size_t i = 0; i < kKeysToOffloadPerWorker; i++) {
-    delete read_requests_ptr[i];
+  reqs[req_idx] = req;
+  if (req_idx == req_cnt) {
+    req_cnt++;
   }
-  delete[] read_requests_ptr;
-  delete[] read_results;
-
-  RAW_LOG(INFO, "Worker %d finish inserting %d keys into Clover.", worker_id,
-          kKeysToOffloadPerWorker);
 }
 
 void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
@@ -109,10 +68,17 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   int base_port_index = herd_params.base_port_index;
   int postlist = herd_params.postlist;
 
+  // A LRU system which records what keys are currently being offloaded. Uses
+  // the version with minimum occurence count to prevent frequent
+  // insertion-eviction of less popular keys.
+  LruRecordsWithMinCount<mitsume_key> lru(FLAGS_lru_size, FLAGS_lru_window,
+                                          FLAGS_lru_min_count);
+  // FIXME: a temporary workaround to prevent repeating insertion
+  std::unordered_set<mitsume_key> inserted_keys;
   // Request queue producer token for this worker thread
   moodycamel::ProducerToken ptok(req_queue);
-  // Clover request buffer
-  vector<CloverRequest> clover_req_buf(MICA_MAX_BATCH_SIZE);
+  // Clover request buffer. Stores "Write" and "Invalidation" requests.
+  vector<CloverRequest> clover_req_buf(2 * MICA_MAX_BATCH_SIZE);
   // Clover response buffer
   CloverResponse clover_resp_buf[MICA_MAX_BATCH_SIZE];
 
@@ -120,9 +86,6 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   mica_kv kv;
   mica_init(&kv, wrkr_lid, 0, HERD_NUM_BKTS, HERD_LOG_CAP);
   mica_populate_fixed_len(&kv, HERD_NUM_KEYS, HERD_VALUE_SIZE);
-  CloverLookupTable clover_lookup_table;
-  PopulateDataNode(req_queue, ptok, resp_queue_ptr, wrkr_lid, &kv,
-                   clover_lookup_table);
 
   hrd_ctrl_blk *cb[MAX_SERVER_PORTS];
 
@@ -205,8 +168,12 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   int ud_qp_i = 0; /* UD QP index: same for both ports */
   long long nb_tx_tot = 0;
   long long nb_post_send = 0;
-  // Clover operation counter for measuring performance
+  // Clover write/invalidation counter for measuring performance
   long num_clover_updates = 0;
+  // Clover insertion counter for measuring performance
+  long num_clover_inserts = 0;
+  // LRU eviction (Clover invalidation) counter for measuring performance
+  long num_lru_eviction = 0;
 
   /*
    * @cb_i is the control block to use for @clt_i's response. If NUM_CLIENTS
@@ -239,15 +206,25 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
           wrkr_lid, M_4 / seconds, (double)nb_tx_tot / nb_post_send,
           (double)kv.num_get_fail / kv.num_get_op,
           num_clover_updates / seconds);
-      if (wrkr_lid == 0) {
-        RAW_LOG(INFO, "Approximated pending requests = %lu",
-                req_queue.size_approx());
-      }
+      /*
+       * Clover insertion rate < LRU eviction rate means some previously evicted
+       * keys are inserted to LRU again.
+       * Re-insertion rate = max(LRU eviction rate - Clover insertion rate, 0)
+       */
+      LOG(INFO) << "Worker " << wrkr_lid
+                << ": Clover total insertions: " << inserted_keys.size()
+                << ", rate: " << num_clover_inserts / seconds
+                << "/s. LRU eviction (Clover invalidation): "
+                << num_lru_eviction / seconds << "/s";
+      LOG_IF(INFO, wrkr_lid == 0) << "Approximated pending clover requests: "
+                                  << req_queue.size_approx();
 
       rolling_iter = 0;
       nb_tx_tot = 0;
       nb_post_send = 0;
       num_clover_updates = 0;
+      num_clover_inserts = 0;
+      num_lru_eviction = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -338,40 +315,89 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
 
     // We may insert mirroring/invalidation operations (Clover compute node)
     // here.
-    int clover_req_cnt = 0;
+    unsigned int clover_req_cnt = 0, clover_insert_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
       if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
         // the second 8 bytes of mica_key.
         mitsume_key key =
             ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
-        if (clover_lookup_table.find(key) == clover_lookup_table.end()) {
-          continue;
+        bool contain_before = lru.Contain(key);
+        auto evicted = lru.Put(key);
+        bool contain_after = lru.Contain(key);
+        // it is possible that contain_after is false:
+        // 'occurences in current time window' < FLAGS_lru_min_count
+        // Insert or update the value in Clover only when it is in LRU.
+        if (contain_after) {
+          // FIXME: once "Clover deletion" is implemented, change the following
+          // condition to:
+          // if (!contain_before)
+          if (inserted_keys.find(key) == inserted_keys.end()) {
+            // Should insert this key
+            CloverRequest req{
+                key,                         // key
+                op_ptr_arr[i]->value,        // buf
+                op_ptr_arr[i]->val_len,      // len
+                clover_insert_req_cnt,       // id
+                CloverRequestType::kInsert,  // type
+                wrkr_lid,                    // from
+                true                         // need_reply
+            };
+            while (!req_queue.try_enqueue(ptok, req))
+              ;
+            clover_insert_req_cnt++;
+            inserted_keys.insert(key);
+          } else {
+            AddNewCloverReq(clover_req_buf, clover_req_cnt,
+                            CloverRequest{
+                                key,                        // key
+                                op_ptr_arr[i]->value,       // buf
+                                op_ptr_arr[i]->val_len,     // len
+                                clover_req_cnt,             // id
+                                CloverRequestType::kWrite,  // type
+                                wrkr_lid,                   // from
+                                FLAGS_clover_blocking       // need_reply
+                            });
+          }
         }
-
-        clover_req_buf[clover_req_cnt] = CloverRequest{
-            key,                                        // key
-            op_ptr_arr[i]->value,                       // buf
-            op_ptr_arr[i]->val_len,                     // len
-            static_cast<unsigned int>(clover_req_cnt),  // id
-            CloverRequestType::kWrite,                  // type
-            wrkr_lid,                                   // from
-            FLAGS_clover_blocking                       // need_reply
-        };
-        clover_req_cnt++;
+        if (evicted.has_value()) {
+          /* FIXME: "delete" old keys instead of invalidate */
+          // Special value indicating the correspondin value is invalid
+          thread_local static char invalid_value[] = "error";
+          // invalidate old keys
+          AddNewCloverReq(clover_req_buf, clover_req_cnt,
+                          CloverRequest{
+                              key,                             // key
+                              invalid_value,                   // buf
+                              sizeof(invalid_value),           // len
+                              clover_req_cnt,                  // id
+                              CloverRequestType::kInvalidate,  // type
+                              wrkr_lid,                        // from
+                              FLAGS_clover_blocking            // need_reply
+                          });
+          num_lru_eviction++;
+        }
       }
+    }
+
+    // wait for insertion completes before writing values
+    unsigned int clover_comps = 0;
+    while (clover_comps < clover_insert_req_cnt) {
+      clover_comps += resp_queue_ptr->try_dequeue_bulk(
+          clover_resp_buf + clover_comps, clover_insert_req_cnt - clover_comps);
     }
 
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(clover_req_buf.begin()), clover_req_cnt))
       ;
-    int clover_comps = 0;
+    clover_comps = 0;
     while (FLAGS_clover_blocking && clover_comps < clover_req_cnt) {
       clover_comps += resp_queue_ptr->try_dequeue_bulk(
           clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
     }
     // error will be reported in Clover worker coroutine
     num_clover_updates += clover_req_cnt;
+    num_clover_inserts += clover_insert_req_cnt;
 
     /*
      * Fill in the computed @val_ptr's. For non-postlist mode, this loop
@@ -430,6 +456,10 @@ int main(int argc, char *argv[]) {
   LOG(INFO) << "Using " << NUM_WORKERS << " HERD worker threads and "
             << FLAGS_clover_threads << " Clover worker threads";
   LOG(INFO) << "Expecting " << NUM_CLIENTS << " client threads in total";
+
+  LOG(INFO) << "LRU capacity: " << FLAGS_lru_size
+            << ", window: " << FLAGS_lru_window
+            << ", min count: " << FLAGS_lru_min_count;
 
   // Setup Clover compute node
   CloverComputeNodeWrapper clover_node(NUM_WORKERS);

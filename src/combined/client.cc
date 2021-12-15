@@ -344,8 +344,6 @@ int main(int argc, char* argv[]) {
    */
   clover_node.Initialize();
   LOG(INFO) << "Done initializing clover compute node";
-  LOG(INFO) << "Wait 10 secs for server to populate keys to Clover";
-  sleep(10);
 
   std::vector<std::thread> threads;
   for (int i = 0; i < FLAGS_herd_threads; i++) {
