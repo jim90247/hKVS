@@ -21,6 +21,7 @@ set(CMAKE_INSTALL_PREFIX ${PROJECT_SOURCE_DIR})
 include_directories(${PROJECT_SOURCE_DIR}/src)
 
 add_subdirectory(src)
+add_subdirectory(exp)
 
 if (BUILD_TESTING)
   find_package(Catch2 REQUIRED)
