@@ -344,6 +344,10 @@ int main(int argc, char* argv[]) {
    */
   clover_node.Initialize();
   LOG(INFO) << "Done initializing clover compute node";
+  // Mitigate a bug in Clover that causes the assertions in
+  // userspace_wait_wr_table_value to fail
+  LOG(INFO) << "Sleep 3 secs to wait Clover metadata server complete setup";
+  sleep(3);
 
   std::vector<std::thread> threads;
   for (int i = 0; i < FLAGS_herd_threads; i++) {
