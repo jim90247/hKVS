@@ -100,7 +100,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   // Clover request buffer. Stores "Write" and "Invalidation" requests.
   vector<CloverRequest> clover_req_buf(2 * MICA_MAX_BATCH_SIZE);
   // Clover response buffer
-  CloverResponse clover_resp_buf[MICA_MAX_BATCH_SIZE];
+  CloverResponse clover_resp_buf[2 * MICA_MAX_BATCH_SIZE];
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
