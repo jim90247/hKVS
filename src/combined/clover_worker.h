@@ -29,6 +29,8 @@ struct CloverRequest {
 
 struct CloverResponse {
   CloverRequestIdType id;
+  CloverRequestType type;
+  int rc;
 };
 
 /// Multi-threaded request queue

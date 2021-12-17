@@ -60,6 +60,26 @@ inline void AddNewCloverReq(std::vector<CloverRequest> &reqs,
   }
 }
 
+/**
+ * @brief Checks and reports errors found in Clover response buffer.
+ * 
+ * @param resp Clover response buffer
+ * @param n number of responses
+ * @return true if at least one error is found
+ */
+inline bool CheckCloverError(CloverResponse *resp, int n) {
+  bool found_error = false;
+  for (int i = 0; i < n; i++) {
+    if (resp[i].rc != MITSUME_SUCCESS) {
+      LOG(ERROR) << "Clover request " << resp[i].id
+                 << " failed, type=" << static_cast<int>(resp[i].type)
+                 << ", rc=" << resp[i].rc;
+      found_error = true;
+    }
+  }
+  return found_error;
+}
+
 void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                 std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
   int i, ret;
@@ -386,6 +406,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       clover_comps += resp_queue_ptr->try_dequeue_bulk(
           clover_resp_buf + clover_comps, clover_insert_req_cnt - clover_comps);
     }
+    LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
+        << "Detect failed Clover insert, see above error message for details";
 
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(clover_req_buf.begin()), clover_req_cnt))
@@ -395,7 +417,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       clover_comps += resp_queue_ptr->try_dequeue_bulk(
           clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
     }
-    // error will be reported in Clover worker coroutine
+    LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
+        << "Detect failed Clover write, see above error message for details";
     num_clover_updates += clover_req_cnt;
     num_clover_inserts += clover_insert_req_cnt;
 
@@ -437,7 +460,11 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
 }
 
 int main(int argc, char *argv[]) {
+  FLAGS_colorlogtostderr = true;
+  FLAGS_logtostderr = true;
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+  google::InitGoogleLogging(argv[0]);
+  google::InstallFailureSignalHandler();
 
   CHECK(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
   CHECK(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
