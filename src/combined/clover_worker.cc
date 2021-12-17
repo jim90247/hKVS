@@ -17,21 +17,22 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
   CloverRequest req;
   while (true) {
     if (req_queue.try_dequeue(ctok, req)) {
-      int rc = MITSUME_SUCCESS;
+      CloverResponse resp{
+          req.id,    // id
+          req.type,  // type,
+          0          // rc
+      };
       switch (req.type) {
         case CloverRequestType::kInsert:
-          rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
+          resp.rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
           break;
         case CloverRequestType::kWrite:
-          rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
+        case CloverRequestType::kInvalidate:
+          resp.rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
           break;
       }
-      if (rc != MITSUME_SUCCESS) {
-        RAW_LOG(FATAL, "Operation %d failed: key=%lu, rc=%d",
-                static_cast<int>(req.type), req.key, rc);
-      }
       if (req.need_reply) {
-        while (!resp_queues.at(req.from)->try_enqueue(CloverResponse{req.id})) {
+        while (!resp_queues.at(req.from)->try_enqueue(resp)) {
           cn_thread.YieldToAnotherCoro(coro, yield);
         }
       }

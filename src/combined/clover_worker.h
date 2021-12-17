@@ -15,7 +15,7 @@ DECLARE_bool(clover_blocking);
 
 using CloverRequestIdType = uint32_t;
 
-enum class CloverRequestType { kInsert, kWrite };
+enum class CloverRequestType { kInsert, kWrite, kInvalidate };
 
 struct CloverRequest {
   mitsume_key key;
@@ -29,6 +29,8 @@ struct CloverRequest {
 
 struct CloverResponse {
   CloverRequestIdType id;
+  CloverRequestType type;
+  int rc;
 };
 
 /// Multi-threaded request queue
