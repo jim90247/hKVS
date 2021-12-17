@@ -89,7 +89,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   int postlist = herd_params.postlist;
 
   // A LRU system which records what keys are currently being offloaded. Uses
-  // the version with minimum occurence count to prevent frequent
+  // the version with minimum occurrence count to prevent frequent
   // insertion-eviction of less popular keys.
   LruRecordsWithMinCount<mitsume_key> lru(FLAGS_lru_size, FLAGS_lru_window,
                                           FLAGS_lru_min_count);
@@ -346,7 +346,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
         auto evicted = lru.Put(key);
         bool contain_after = lru.Contain(key);
         // it is possible that contain_after is false:
-        // 'occurences in current time window' < FLAGS_lru_min_count
+        // 'occurrences in current time window' < FLAGS_lru_min_count
         // Insert or update the value in Clover only when it is in LRU.
         if (contain_after) {
           // FIXME: once "Clover deletion" is implemented, change the following

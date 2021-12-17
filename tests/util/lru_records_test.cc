@@ -76,7 +76,7 @@ TEMPLATE_TEST_CASE("LRU records with minimum count (integer types)",
     REQUIRE(rec.value() == 2);
   }
 
-  SECTION("items with few occurences should not be included") {
+  SECTION("items with few occurrences should not be included") {
     records.Put(1);
     records.Put(2);
     records.Put(2);

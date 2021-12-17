@@ -70,11 +70,11 @@ class LruRecordsWithMinCount : public LruRecords<T> {
  public:
   /**
    * @brief Construct an empty LRU Records With a fixed capacity and threshold
-   * for minimum occurences in a sliding window.
+   * for minimum occurrences in a sliding window.
    *
    * @param cap the LRU record capacity
    * @param win the size of the sliding window
-   * @param min_cnt the minimum occurences in a sliding window
+   * @param min_cnt the minimum occurrences in a sliding window
    */
   LruRecordsWithMinCount(size_t cap, size_t win, int min_cnt)
       : LruRecords<T>(cap), window_size_(win), min_count_(min_cnt) {}
