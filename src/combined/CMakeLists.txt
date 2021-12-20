@@ -15,6 +15,6 @@ add_executable(combined_worker worker.cc herd_main.h)
 target_link_libraries(combined_worker ${COMBINED_COMMON_LIB} mica libhrd combined_clover_worker)
 
 add_executable(combined_client client.cc herd_main.h)
-target_link_libraries(combined_client ${COMBINED_COMMON_LIB} mica libhrd zipfian)
+target_link_libraries(combined_client ${COMBINED_COMMON_LIB} mica libhrd combined_clover_worker zipfian)
 
 install(TARGETS combined_worker combined_client)

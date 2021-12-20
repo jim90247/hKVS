@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "clover_worker.h"
 #include "clover_wrapper/cn.h"
 #include "herd_main.h"
 #include "libhrd/hrd.h"
@@ -28,14 +29,14 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(herd_machine_id, 0, "HERD machine id");
 DEFINE_int32(herd_threads, 1, "Number of threads running HERD client");
 
-DEFINE_int32(clover_threads, 1,
-             "Number of threads running Clover compute node");
-
 DEFINE_uint32(update_percentage, 5,
               "Percentage of update/set operations (0~100)");
 DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
+
+// Clover request batch size
+constexpr unsigned int kCloverBatch = 32;
 
 /**
  * @brief Generates a key access trace based on Zipfian distribution. Key range:
@@ -68,7 +69,9 @@ vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id,
 }
 
 /// HERD thread main function
-void HerdMain(herd_thread_params herd_params) {
+void HerdMain(herd_thread_params herd_params, int local_id,
+              SharedRequestQueue& req_queue,
+              std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
   int i;
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
@@ -83,6 +86,17 @@ void HerdMain(herd_thread_params herd_params) {
    * the server's base_port_index (that the client does not know).
    */
   int srv_virt_port_index = clt_gid % num_server_ports;
+
+  // Clover request buffer
+  std::vector<CloverRequest> clover_req_buf(kCloverBatch);
+  // index of Clover request buffer
+  unsigned int clover_req_cnt = 0;
+  // Clover response buffer
+  CloverResponse clover_resp_buf[kCloverBatch];
+  constexpr unsigned int kCloverReadBufSize = 4096;
+  // Clover read buffer
+  // char clover_read_buf[kCloverBatch][kCloverReadBufSize] = {0};
+  char* clover_read_buf = new char[kCloverBatch * kCloverReadBufSize]();
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -147,6 +161,8 @@ void HerdMain(herd_thread_params herd_params) {
   long long nb_tx = 0;        /* Total requests performed or queued */
   int wn = 0;                 /* Worker number */
 
+  long clover_submit = 0;  // submitted clover requests, reset periodically
+
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
 
@@ -164,8 +180,12 @@ void HerdMain(herd_thread_params herd_params) {
                    (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
       RAW_LOG(INFO, "HERD worker %4d: %12.3f op/s", clt_gid,
               kMaxRollingIter / sec);
+      LOG(INFO) << "Clover submit rate: " << clover_submit / sec << "/s";
+      LOG_IF(INFO, local_id == 0)
+          << "Approx. queued Clover requests: " << req_queue.size_approx();
 
       rolling_iter = 0;
+      clover_submit = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -196,6 +216,47 @@ void HerdMain(herd_thread_params herd_params) {
     /* Forge the HERD request */
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
+
+    if (clover_req_cnt == kCloverBatch) {
+      while (!req_queue.try_enqueue_bulk(clover_req_buf.begin(), kCloverBatch))
+        ;
+      unsigned int comps = 0;
+      while (comps < kCloverBatch) {
+        comps += resp_queue_ptr->try_dequeue_bulk(clover_resp_buf + comps,
+                                                  kCloverBatch - comps);
+      }
+      CHECK_EQ(comps, kCloverBatch);
+      clover_submit += kCloverBatch;
+      clover_req_cnt = 0;
+    }
+    // TODO: build lookup table
+    if (clover_req_cnt < kCloverBatch && is_update == 0 &&
+        key < kKeysToOffloadPerWorker) {
+      uint128 mica_k = ConvertPlainKeyToHerdKey(key);
+      mitsume_key clover_k = ConvertHerdKeyToCloverKey(
+          reinterpret_cast<mica_key*>(&mica_k), local_id);
+      char* rbuf = clover_read_buf + clover_req_cnt * kCloverReadBufSize;
+      // Always ask for responses from worker threads, since we need the return
+      // code in the response to update lookup table (check if a key has been
+      // removed from Clover).
+      clover_req_buf[clover_req_cnt] = CloverRequest{
+          clover_k,                  // key
+          rbuf,                      // buf
+          kCloverReadBufSize,        // len
+          clover_req_cnt,            // id
+          CloverRequestType::kRead,  // type
+          local_id,                  // from
+          true                       // need_reply
+      };
+      clover_req_cnt++;
+
+      // NOTE: a bug here: using "continue;" here will cause blocking at
+      // hrd_poll_cq() above
+      // workaround: build next HERD request and send it
+      is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
+      key = trace.at(key_i);
+      key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
+    }
 
     *(uint128*)req_buf = ConvertPlainKeyToHerdKey(key);
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
@@ -230,97 +291,12 @@ void HerdMain(herd_thread_params herd_params) {
   }
 }
 
-void CloverWorkerCoroutine(coro_yield_t& yield,
-                           CloverCnThreadWrapper& clover_thread, int coro,
-                           CoroRequestQueue& req_queue) {
-  char buf[4096] = {0};
-  uint32_t len = 0U;
-
-  while (true) {
-    if (req_queue.empty()) {
-      clover_thread.YieldToAnotherCoro(coro, yield);
-      continue;
-    }
-    mitsume_key key = req_queue.front();
-    req_queue.pop();
-    RAW_DLOG(INFO, "coro %d read key %lu start", coro, key);
-    // will yield to other coroutines which enables concurrent reading
-    clover_thread.ReadKVPair(key, buf, &len, 4096, coro, yield);
-    RAW_DLOG(INFO, "coro %d read key %lu done", coro, key);
-  }
-}
-
-/// Main coroutine that dispatch keys in trace to different worker coroutines
-/// via a shared request queue and report performance numbers.
-void CloverMainCoroutine(coro_yield_t& yield,
-                         CloverCnThreadWrapper& clover_thread, int thread_id,
-                         const std::vector<int>& trace,
-                         CoroRequestQueue& req_queue) {
-  using clock = std::chrono::steady_clock;
-  constexpr size_t kReqDepth = 2 * kCloverWorkerCoroutines;
-  size_t idx = 0;
-
-  auto start = clock::now();
-  while (true) {
-    while (req_queue.size() < kReqDepth) {
-      int raw_key = trace.at(idx++);
-      uint128 mica_k = ConvertPlainKeyToHerdKey(raw_key);
-      mitsume_key clover_k =
-          ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), 0);
-      req_queue.push(clover_k);
-      if (idx >= trace.size()) {
-        // Report performance each time the full trace is enqueued for
-        // processing
-        auto end = clock::now();
-        double sec = std::chrono::duration<double>(end - start).count();
-        RAW_LOG(INFO, "Clover thread %2d: %12.3f op/s", thread_id,
-                trace.size() / sec);
-
-        start = clock::now();
-        idx = 0;
-      }
-    }
-    clover_thread.YieldToAnotherCoro(kMasterCoroutineIdx, yield);
-  }
-}
-
-/// Clover thread main function
-void CloverMain(CloverComputeNodeWrapper& clover_node, int clover_thread_id) {
-  using std::placeholders::_1;
-  // Use local thread id as Clover thread id
-  CloverCnThreadWrapper clover_thread(std::ref(clover_node), clover_thread_id);
-
-  RAW_LOG(INFO, "Starting Clover thread %2d", clover_thread_id);
-
-  /// Each clover thread has its own trace. Master coroutine distributes the
-  /// trace across worker coroutines.
-  std::vector<int> trace = GenerateZipfianTrace(1UL << 20, clover_thread_id,
-                                                kKeysToOffloadPerWorker);
-  /// The trace is distributed via this request queue (shared between workers).
-  /// Since any two coroutines will not be executed at the same time, there
-  /// won't have race conditions when multiple coroutines uses the same request
-  /// queue.
-  CoroRequestQueue req_queue;
-
-  clover_thread.RegisterCoroutine(
-      coro_call_t(std::bind(CloverMainCoroutine, _1, std::ref(clover_thread),
-                            clover_thread_id, std::ref(trace),
-                            std::ref(req_queue))),
-      kMasterCoroutineIdx);
-
-  for (int coro = 1; coro <= kCloverWorkerCoroutines; coro++) {
-    clover_thread.RegisterCoroutine(
-        coro_call_t(std::bind(CloverWorkerCoroutine, _1,
-                              std::ref(clover_thread), coro,
-                              std::ref(req_queue))),
-        coro);
-  }
-
-  clover_thread.ExecuteMasterCoroutine();
-}
-
 int main(int argc, char* argv[]) {
+  FLAGS_colorlogtostderr = true;
+  FLAGS_logtostderr = true;
   gflags::ParseCommandLineFlags(&argc, &argv, true);
+  google::InitGoogleLogging(argv[0]);
+  google::InstallFailureSignalHandler();
 
   CHECK(FLAGS_herd_base_port_index >= 0 && FLAGS_herd_base_port_index <= 8);
   CHECK(FLAGS_herd_server_ports >= 1 && FLAGS_herd_server_ports <= 8);
@@ -349,6 +325,16 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Sleep 3 secs to wait Clover metadata server complete setup";
   sleep(3);
 
+  SharedRequestQueue clover_req_queue(2 * kCloverBatch, 0, FLAGS_herd_threads);
+  std::vector<std::shared_ptr<SharedResponseQueue>> clover_resp_queues;
+  // using clover_resp_queues(NUM_WORKERS,
+  // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
+  // pointing to the same queue
+  for (int i = 0; i < FLAGS_herd_threads; i++) {
+    clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
+        2 * kCloverBatch, 0, FLAGS_clover_threads));
+  }
+
   std::vector<std::thread> threads;
   for (int i = 0; i < FLAGS_herd_threads; i++) {
     herd_thread_params param = {
@@ -359,11 +345,14 @@ int main(int argc, char* argv[]) {
         .update_percentage = FLAGS_update_percentage,
         // Does not matter for clients. Client postlist = NUM_WORKERS
         .postlist = -1};
-    auto t = std::thread(HerdMain, param);
+    auto t = std::thread(HerdMain, param, i, std::ref(clover_req_queue),
+                         clover_resp_queues.at(i));
     threads.emplace_back(std::move(t));
   }
   for (int i = 0; i < FLAGS_clover_threads; i++) {
-    auto t = std::thread(std::thread(CloverMain, std::ref(clover_node), i));
+    auto t = std::thread(CloverThreadMain, std::ref(clover_node),
+                         std::ref(clover_req_queue),
+                         std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }
 

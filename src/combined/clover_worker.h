@@ -1,5 +1,6 @@
 #pragma once
 #include <gflags/gflags.h>
+#include <glog/logging.h>
 #include <moodycamel/concurrentqueue.h>
 
 #include <memory>
@@ -15,7 +16,7 @@ DECLARE_bool(clover_blocking);
 
 using CloverRequestIdType = uint32_t;
 
-enum class CloverRequestType { kInsert, kWrite, kInvalidate };
+enum class CloverRequestType { kInsert, kWrite, kInvalidate, kRead };
 
 struct CloverRequest {
   mitsume_key key;
