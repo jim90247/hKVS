@@ -18,9 +18,6 @@
 using CoroRequestQueue = std::queue<mitsume_key>;
 
 constexpr int DGRAM_BUF_SIZE = 4096;
-constexpr int kCloverWorkerCoroutines = 4;
-// Clover coroutines + master coroutine
-static_assert(kCloverWorkerCoroutines + 1 <= MITSUME_CLT_COROUTINE_NUMBER);
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 DEFINE_int32(herd_client_ports, 1, "Number of client ports");
@@ -29,14 +26,13 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(herd_machine_id, 0, "HERD machine id");
 DEFINE_int32(herd_threads, 1, "Number of threads running HERD client");
 
+DEFINE_uint32(clover_batch, 32, "Clover request submit batch size");
+
 DEFINE_uint32(update_percentage, 5,
               "Percentage of update/set operations (0~100)");
 DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
-
-// Clover request batch size
-constexpr unsigned int kCloverBatch = 32;
 
 /**
  * @brief Generates a key access trace based on Zipfian distribution. Key range:
@@ -87,16 +83,17 @@ void HerdMain(herd_thread_params herd_params, int local_id,
    */
   int srv_virt_port_index = clt_gid % num_server_ports;
 
+  // Request queue producer token for this worker thread
+  moodycamel::ProducerToken ptok(req_queue);
   // Clover request buffer
-  std::vector<CloverRequest> clover_req_buf(kCloverBatch);
+  std::vector<CloverRequest> clover_req_buf(FLAGS_clover_batch);
   // index of Clover request buffer
   unsigned int clover_req_cnt = 0;
   // Clover response buffer
-  CloverResponse clover_resp_buf[kCloverBatch];
+  CloverResponse* clover_resp_buf = new CloverResponse[FLAGS_clover_batch];
   constexpr unsigned int kCloverReadBufSize = 4096;
   // Clover read buffer
-  // char clover_read_buf[kCloverBatch][kCloverReadBufSize] = {0};
-  char* clover_read_buf = new char[kCloverBatch * kCloverReadBufSize]();
+  char* clover_read_buf = new char[FLAGS_clover_batch * kCloverReadBufSize]();
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -161,7 +158,14 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   long long nb_tx = 0;        /* Total requests performed or queued */
   int wn = 0;                 /* Worker number */
 
-  long clover_submit = 0;  // submitted clover requests, reset periodically
+  // Submitted Clover requests (reset periodically) (for perf measurement)
+  long clover_submit = 0;
+  // Succeeded Clover requests (reset periodically) (for perf measurement)
+  long clover_success = 0;
+  // Received Clover responses (reset after every batch submission)
+  unsigned int clover_responses = FLAGS_clover_batch;
+  // A flag indicating if we're waiting for Clover responses
+  bool wait_for_clover_resp = false;
 
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -178,14 +182,15 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       clock_gettime(CLOCK_REALTIME, &end);
       double sec = (end.tv_sec - start.tv_sec) +
                    (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
-      RAW_LOG(INFO, "HERD worker %4d: %12.3f op/s", clt_gid,
-              kMaxRollingIter / sec);
-      LOG(INFO) << "Clover submit rate: " << clover_submit / sec << "/s";
+      LOG(INFO) << "Worker " << clt_gid << ", HERD: " << rolling_iter / sec
+                << "/s, Clover submit: " << clover_submit / sec
+                << "/s, success: " << clover_success / sec << "/s";
       LOG_IF(INFO, local_id == 0)
           << "Approx. queued Clover requests: " << req_queue.size_approx();
 
       rolling_iter = 0;
       clover_submit = 0;
+      clover_success = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -217,21 +222,8 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
-    if (clover_req_cnt == kCloverBatch) {
-      while (!req_queue.try_enqueue_bulk(clover_req_buf.begin(), kCloverBatch))
-        ;
-      unsigned int comps = 0;
-      while (comps < kCloverBatch) {
-        comps += resp_queue_ptr->try_dequeue_bulk(clover_resp_buf + comps,
-                                                  kCloverBatch - comps);
-      }
-      CHECK_EQ(comps, kCloverBatch);
-      clover_submit += kCloverBatch;
-      clover_req_cnt = 0;
-    }
     // TODO: build lookup table
-    if (clover_req_cnt < kCloverBatch && is_update == 0 &&
-        key < kKeysToOffloadPerWorker) {
+    if (!wait_for_clover_resp && !is_update && key < kKeysToOffloadPerWorker) {
       uint128 mica_k = ConvertPlainKeyToHerdKey(key);
       mitsume_key clover_k = ConvertHerdKeyToCloverKey(
           reinterpret_cast<mica_key*>(&mica_k), local_id);
@@ -250,12 +242,35 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       };
       clover_req_cnt++;
 
-      // NOTE: a bug here: using "continue;" here will cause blocking at
-      // hrd_poll_cq() above
+      if (clover_req_cnt == FLAGS_clover_batch) {
+        while (!req_queue.try_enqueue_bulk(ptok, clover_req_buf.begin(),
+                                           FLAGS_clover_batch))
+          ;
+        wait_for_clover_resp = true;
+        clover_responses = 0;
+        clover_submit += FLAGS_clover_batch;
+      }
+
+      // NOTE: use "continue" here will cause blocking at hrd_poll_cq() above
       // workaround: build next HERD request and send it
       is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
       key = trace.at(key_i);
       key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
+    }
+    if (wait_for_clover_resp && clover_responses < FLAGS_clover_batch) {
+      clover_responses += resp_queue_ptr->try_dequeue_bulk(
+          clover_resp_buf + clover_responses,
+          FLAGS_clover_batch - clover_responses);
+      if (clover_responses >= FLAGS_clover_batch) {
+        CHECK_EQ(clover_responses, FLAGS_clover_batch);
+        for (unsigned int j = 0; j < FLAGS_clover_batch; j++) {
+          if (clover_resp_buf[j].rc == MITSUME_SUCCESS) {
+            clover_success++;
+          }
+        }
+        wait_for_clover_resp = false;
+        clover_req_cnt = 0;
+      }
     }
 
     *(uint128*)req_buf = ConvertPlainKeyToHerdKey(key);
@@ -306,10 +321,13 @@ int main(int argc, char* argv[]) {
   CHECK_GE(FLAGS_herd_machine_id, 0);
   CHECK_LE(FLAGS_update_percentage, 100);
 
+  // Clover coroutines + master coroutine
+  CHECK_LE(FLAGS_clover_coros + 1, MITSUME_CLT_COROUTINE_NUMBER);
+
   LOG(INFO) << "Using " << FLAGS_herd_threads << " threads for HERD and "
             << FLAGS_clover_threads << " threads for Clover";
-  LOG(INFO) << "Using " << kCloverWorkerCoroutines
-            << " Clover worker coroutines";
+  LOG(INFO) << "Using " << FLAGS_clover_coros << " Clover worker coroutines";
+  LOG(INFO) << "Clover request submit batch size: " << FLAGS_clover_batch;
 
   CloverComputeNodeWrapper clover_node(FLAGS_clover_threads);
   /* Since primary KVS (combined_worker) initializes connection to Clover before
@@ -325,14 +343,15 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Sleep 3 secs to wait Clover metadata server complete setup";
   sleep(3);
 
-  SharedRequestQueue clover_req_queue(2 * kCloverBatch, 0, FLAGS_herd_threads);
+  SharedRequestQueue clover_req_queue(2 * FLAGS_clover_batch, 0,
+                                      FLAGS_herd_threads);
   std::vector<std::shared_ptr<SharedResponseQueue>> clover_resp_queues;
   // using clover_resp_queues(NUM_WORKERS,
   // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
   // pointing to the same queue
   for (int i = 0; i < FLAGS_herd_threads; i++) {
     clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
-        2 * kCloverBatch, 0, FLAGS_clover_threads));
+        2 * FLAGS_clover_batch, 0, FLAGS_clover_threads));
   }
 
   std::vector<std::thread> threads;
