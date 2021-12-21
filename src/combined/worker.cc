@@ -27,6 +27,9 @@ DEFINE_int32(herd_base_port_index, 0, "HERD base port index");
 DEFINE_int32(postlist, 1,
              "Post list size (max # of requests in ibv_post_send)");
 
+DEFINE_bool(clover_blocking, false,
+            "Wait for Clover request complete before continuing");
+
 DEFINE_uint64(lru_size, 8192, "Size of LRU record");
 DEFINE_uint64(lru_window, 65536, "Size of LRU window");
 DEFINE_int32(lru_min_count, 4,
@@ -62,7 +65,7 @@ inline void AddNewCloverReq(std::vector<CloverRequest> &reqs,
 
 /**
  * @brief Checks and reports errors found in Clover response buffer.
- * 
+ *
  * @param resp Clover response buffer
  * @param n number of responses
  * @return true if at least one error is found
@@ -101,6 +104,10 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   vector<CloverRequest> clover_req_buf(2 * MICA_MAX_BATCH_SIZE);
   // Clover response buffer
   CloverResponse clover_resp_buf[2 * MICA_MAX_BATCH_SIZE];
+  // Reply option for Clover write requests
+  CloverReplyOption write_reply_opt = FLAGS_clover_blocking
+                                          ? CloverReplyOption::kAlways
+                                          : CloverReplyOption::kNever;
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
@@ -361,7 +368,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                 clover_insert_req_cnt,       // id
                 CloverRequestType::kInsert,  // type
                 wrkr_lid,                    // from
-                true                         // need_reply
+                CloverReplyOption::kAlways   // need_reply
             };
             while (!req_queue.try_enqueue(ptok, req))
               ;
@@ -376,7 +383,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                                 clover_req_cnt,             // id
                                 CloverRequestType::kWrite,  // type
                                 wrkr_lid,                   // from
-                                FLAGS_clover_blocking       // need_reply
+                                write_reply_opt             // reply_opt
                             });
           }
         }
@@ -393,7 +400,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                               clover_req_cnt,                  // id
                               CloverRequestType::kInvalidate,  // type
                               wrkr_lid,                        // from
-                              FLAGS_clover_blocking            // need_reply
+                              write_reply_opt                  // reply_opt
                           });
           num_lru_eviction++;
         }

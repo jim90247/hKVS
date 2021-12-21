@@ -18,7 +18,7 @@ export MLX4_SINGLE_THREADED=1
 
 show_message "Memcached server IP: ${HRD_REGISTRY_IP}"
 if ! ping "$HRD_REGISTRY_IP" -c 1 >/dev/null; then
-    abort_exec "Memcached server is not reachable"
+	abort_exec "Memcached server is not reachable"
 fi
 
 [ "$#" -eq 1 ] || abort_exec "Illegal number of parameters."
@@ -38,4 +38,5 @@ sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
 	--clover_cn 2 \
 	--clover_dn 1 \
 	--clover_threads 8 \
+	--clover_coros 4 \
 	--clover_memcached_ip "$HRD_REGISTRY_IP"
