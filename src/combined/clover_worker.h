@@ -11,12 +11,12 @@
 DECLARE_int32(clover_threads);
 /// Number of worker coroutines in each Clover thread
 DECLARE_int32(clover_coros);
-/// Wait for Clover request complete before continuing
-DECLARE_bool(clover_blocking);
 
 using CloverRequestIdType = uint32_t;
 
 enum class CloverRequestType { kInsert, kWrite, kInvalidate, kRead };
+
+enum class CloverReplyOption { kAlways, kNever, kOnFailure };
 
 struct CloverRequest {
   mitsume_key key;
@@ -25,7 +25,7 @@ struct CloverRequest {
   CloverRequestIdType id;
   CloverRequestType type;
   int from;
-  bool need_reply;
+  CloverReplyOption reply_opt;
 };
 
 struct CloverResponse {

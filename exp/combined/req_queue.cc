@@ -42,9 +42,11 @@ void ProducerMain(SharedRequestQueue& req_queue,
     }
     for (auto& req : reqbuf) {
       req.from = id;
-      req.need_reply = false;
+      req.reply_opt = CloverReplyOption::kNever;
     }
-    reqbuf.back().need_reply = FLAGS_reply;
+    if (FLAGS_reply) {
+      reqbuf.back().reply_opt = CloverReplyOption::kAlways;
+    }
 
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(reqbuf.begin()), FLAGS_batch))
@@ -78,7 +80,7 @@ void ConsumerMain(SharedRequestQueue& req_queue,
     if (req_queue.try_dequeue(ctok, req)) {
       CloverResponse resp{req.id, req.type, MITSUME_SUCCESS};
       bar();
-      if (req.need_reply) {
+      if (req.reply_opt == CloverReplyOption::kAlways) {
         while (!resp_queues.at(req.from)->try_enqueue(resp))
           ;
       }

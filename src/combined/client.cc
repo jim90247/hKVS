@@ -98,10 +98,11 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   // index of Clover request buffer
   unsigned int clover_req_idx = 0;
   // Clover response buffer
-  CloverResponse* clover_resp_buf = new CloverResponse[FLAGS_clover_batch];
+  CloverResponse* clover_resp_buf =
+      new CloverResponse[FLAGS_clover_batch * FLAGS_clover_max_cncr];
   constexpr unsigned int kCloverReadBufEntrySize = 4096;
-  // Clover batch id
-  size_t clover_bid = 0;
+  // Clover batch id (modulo FLAGS_clover_max_cncr)
+  unsigned int clover_bid = 0;
   // Clover read buffer
   char* clover_read_buf = new char[FLAGS_clover_max_cncr * FLAGS_clover_batch *
                                    kCloverReadBufEntrySize]();
@@ -109,9 +110,6 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   CloverState clover_state = CloverState::kPreparing;
   // Number of concurrent Clover batches
   unsigned int clover_cncr = 0;
-  // Number of received responses of the batch currently waiting. Matters only
-  // when clover_state is kWaitForResp.
-  unsigned int clover_num_resps = 0;
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -176,10 +174,10 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   long long nb_tx = 0;        /* Total requests performed or queued */
   int wn = 0;                 /* Worker number */
 
-  // Submitted Clover requests (reset periodically) (for perf measurement)
-  long clover_submit = 0;
-  // Succeeded Clover requests (reset periodically) (for perf measurement)
-  long clover_success = 0;
+  // Completed Clover batches (reset periodically) (for perf measurement)
+  long clover_comp_batch = 0;
+  // Failed Clover requests (reset periodically) (for perf measurement)
+  long clover_fails = 0;
 
   struct timespec start, end;
   clock_gettime(CLOCK_REALTIME, &start);
@@ -197,14 +195,15 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       double sec = (end.tv_sec - start.tv_sec) +
                    (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
       LOG(INFO) << "Worker " << clt_gid << ", HERD: " << rolling_iter / sec
-                << "/s, Clover submit: " << clover_submit / sec
-                << "/s, success: " << clover_success / sec << "/s";
+                << "/s, Clover completed: "
+                << clover_comp_batch * FLAGS_clover_batch / sec
+                << "/s, failures: " << clover_fails / sec << "/s";
       LOG_IF(INFO, local_id == 0)
           << "Approx. queued Clover requests: " << req_queue.size_approx();
 
       rolling_iter = 0;
-      clover_submit = 0;
-      clover_success = 0;
+      clover_comp_batch = 0;
+      clover_fails = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -243,21 +242,23 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       uint128 mica_k = ConvertPlainKeyToHerdKey(key);
       mitsume_key clover_k = ConvertHerdKeyToCloverKey(
           reinterpret_cast<mica_key*>(&mica_k), local_id);
-      char* rbuf = clover_read_buf +
-                   (FLAGS_clover_batch * (clover_bid % FLAGS_clover_max_cncr) +
-                    clover_req_idx) *
-                       kCloverReadBufEntrySize;
-      // Always ask for responses from worker threads, since we need the return
-      // code in the response to update lookup table (check if a key has been
-      // removed from Clover).
+      char* rbuf =
+          clover_read_buf + (FLAGS_clover_batch * clover_bid + clover_req_idx) *
+                                kCloverReadBufEntrySize;
+      // To reduce the amount of responses, requires reply on last request of
+      // each batch. For other requests, ask for reply only when they failed
+      // (used for updating lookup table).
+      CloverReplyOption reply_opt = clover_req_idx == FLAGS_clover_batch - 1
+                                        ? CloverReplyOption::kAlways
+                                        : CloverReplyOption::kOnFailure;
       clover_req_buf.at(clover_req_idx) = CloverRequest{
-          clover_k,                  // key
-          rbuf,                      // buf
-          kCloverReadBufEntrySize,   // len
-          clover_req_idx,            // id
-          CloverRequestType::kRead,  // type
-          local_id,                  // from
-          true                       // need_reply
+          clover_k,                                          // key
+          rbuf,                                              // buf
+          kCloverReadBufEntrySize,                           // len
+          clover_bid * FLAGS_clover_batch + clover_req_idx,  // id
+          CloverRequestType::kRead,                          // type
+          local_id,                                          // from
+          reply_opt                                          // reply_opt
       };
       clover_req_idx++;
 
@@ -276,18 +277,20 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     }
 
     if (clover_state == CloverState::kWaitForResp) {
-      clover_num_resps += resp_queue_ptr->try_dequeue_bulk(
-          clover_resp_buf + clover_num_resps,
-          FLAGS_clover_batch - clover_num_resps);
+      int comps = resp_queue_ptr->try_dequeue_bulk(
+          clover_resp_buf, FLAGS_clover_batch * FLAGS_clover_max_cncr);
 
-      if (clover_num_resps >= FLAGS_clover_batch) {
-        CHECK_EQ(clover_num_resps, FLAGS_clover_batch);
-        for (unsigned int j = 0; j < FLAGS_clover_batch; j++) {
-          if (clover_resp_buf[j].rc == MITSUME_SUCCESS) {
-            clover_success++;
-          }
+      for (int j = 0; j < comps; j++) {
+        if (clover_resp_buf[j].id % FLAGS_clover_batch ==
+            FLAGS_clover_batch - 1) {
+          clover_comp_batch++;
+          clover_cncr--;
         }
-        clover_cncr--;
+        if (clover_resp_buf[j].rc != MITSUME_SUCCESS) {
+          clover_fails++;
+        }
+      }
+      if (clover_cncr < FLAGS_clover_max_cncr) {
         clover_state = CloverState::kReadyToSubmit;
       }
     }
@@ -296,11 +299,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       while (!req_queue.try_enqueue_bulk(ptok, clover_req_buf.begin(),
                                          FLAGS_clover_batch))
         ;
-      clover_num_resps = 0;
       clover_req_idx = 0;
       clover_cncr++;
-      clover_submit += FLAGS_clover_batch;
-      clover_bid++;
+      clover_bid = (clover_bid + 1) % FLAGS_clover_max_cncr;
       clover_state = CloverState::kPreparing;
     }
 

@@ -8,8 +8,6 @@
 DEFINE_int32(clover_threads, 4, "Number of clover worker threads");
 DEFINE_int32(clover_coros, 1,
              "Number of worker coroutines in each Clover thread");
-DEFINE_bool(clover_blocking, false,
-            "Wait for Clover request complete before continuing");
 
 void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
                       SharedRequestQueue &req_queue,
@@ -37,7 +35,9 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
           resp.rc = cn_thread.ReadKVPair(req.key, req.buf, &dummy_len, req.len);
           break;
       }
-      if (req.need_reply) {
+      if (req.reply_opt == CloverReplyOption::kAlways ||
+          (req.reply_opt == CloverReplyOption::kOnFailure &&
+           resp.rc != MITSUME_SUCCESS)) {
         while (!resp_queues.at(req.from)->try_enqueue(resp)) {
           cn_thread.YieldToAnotherCoro(coro, yield);
         }
