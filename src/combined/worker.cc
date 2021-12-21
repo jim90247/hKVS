@@ -107,7 +107,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   // Reply option for Clover write requests
   CloverReplyOption write_reply_opt = FLAGS_clover_blocking
                                           ? CloverReplyOption::kAlways
-                                          : CloverReplyOption::kOnFailure;
+                                          : CloverReplyOption::kNever;
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
