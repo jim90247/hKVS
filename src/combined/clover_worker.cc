@@ -32,7 +32,8 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
           resp.rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
           break;
         case CloverRequestType::kRead:
-          resp.rc = cn_thread.ReadKVPair(req.key, req.buf, &dummy_len, req.len);
+          resp.rc = cn_thread.ReadKVPair(req.key, req.buf, &dummy_len, req.len,
+                                         coro, yield);
           break;
       }
       if (req.reply_opt == CloverReplyOption::kAlways ||
