@@ -12,6 +12,7 @@ DEFINE_int32(producer, 1, "number of producer threads");
 DEFINE_int32(consumer, 1, "number of consumer threads");
 DEFINE_int32(batch, 1, "batch size");
 DEFINE_bool(reply, true, "need reply");
+DEFINE_int32(concurrent_batch, 1, "max concurrent batches");
 
 void ProducerMain(SharedRequestQueue& req_queue,
                   SharedResponseQueuePtr resp_queue_ptr, int id) {
@@ -21,6 +22,7 @@ void ProducerMain(SharedRequestQueue& req_queue,
   moodycamel::ProducerToken ptok(req_queue);
   long iterations = 0;
   auto start = clock::now();
+  int concurrent_batch = 0;
 
   while (true) {
     if (iterations >= 4 << 20) {
@@ -37,13 +39,19 @@ void ProducerMain(SharedRequestQueue& req_queue,
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(reqbuf.begin()), FLAGS_batch))
       ;
-    int comps = 0;
-    while (FLAGS_reply && comps < FLAGS_batch) {
-      comps += resp_queue_ptr->try_dequeue_bulk(respbuf + comps,
-                                                FLAGS_batch - comps);
-    }
-    for (int i = 0; i < FLAGS_batch; i++) {
-      CHECK_EQ(respbuf[i].rc, MITSUME_SUCCESS);
+    concurrent_batch++;
+    if (concurrent_batch == FLAGS_concurrent_batch) {
+      if (FLAGS_reply) {
+        int comps = 0;
+        while (comps < FLAGS_batch) {
+          comps += resp_queue_ptr->try_dequeue_bulk(respbuf + comps,
+                                                    FLAGS_batch - comps);
+        }
+        for (int i = 0; i < FLAGS_batch; i++) {
+          CHECK_EQ(respbuf[i].rc, MITSUME_SUCCESS);
+        }
+      }
+      concurrent_batch--;
     }
     iterations += FLAGS_batch;
   }
@@ -71,11 +79,12 @@ int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
 
-  SharedRequestQueue req_queue(2 * FLAGS_batch, FLAGS_producer, 0);
+  SharedRequestQueue req_queue(FLAGS_concurrent_batch * FLAGS_batch,
+                               FLAGS_producer, 0);
   std::vector<SharedResponseQueuePtr> resp_queues;
   for (int i = 0; i < FLAGS_producer; i++) {
     resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
-        2 * FLAGS_batch, 0, FLAGS_consumer));
+        FLAGS_concurrent_batch * FLAGS_batch, 0, FLAGS_consumer));
   }
 
   std::vector<std::thread> threads;
