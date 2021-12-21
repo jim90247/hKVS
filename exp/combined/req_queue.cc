@@ -13,6 +13,14 @@ DEFINE_int32(consumer, 1, "number of consumer threads");
 DEFINE_int32(batch, 1, "batch size");
 DEFINE_bool(reply, true, "need reply");
 DEFINE_int32(concurrent_batch, 1, "max concurrent batches");
+DEFINE_int32(spin_cycle, 2000, "spin cycle");
+
+void bar() {
+  thread_local static volatile int foo = 0;
+  while (++foo < FLAGS_spin_cycle)
+    ;
+  foo = 0;
+}
 
 void ProducerMain(SharedRequestQueue& req_queue,
                   SharedResponseQueuePtr resp_queue_ptr, int id) {
@@ -65,6 +73,7 @@ void ConsumerMain(SharedRequestQueue& req_queue,
   while (true) {
     if (req_queue.try_dequeue(ctok, req)) {
       CloverResponse resp{req.id, req.type, MITSUME_SUCCESS};
+      bar();
       if (req.need_reply) {
         while (!resp_queues.at(req.from)->try_enqueue(resp))
           ;
