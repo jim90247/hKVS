@@ -26,7 +26,7 @@ void ProducerMain(SharedRequestQueue& req_queue,
                   SharedResponseQueuePtr resp_queue_ptr, int id) {
   using clock = std::chrono::steady_clock;
   std::vector<CloverRequest> reqbuf(FLAGS_batch);
-  CloverResponse* respbuf = new CloverResponse[FLAGS_batch];
+  CloverResponse* respbuf = new CloverResponse[FLAGS_concurrent_batch];
   moodycamel::ProducerToken ptok(req_queue);
   long iterations = 0;
   auto start = clock::now();
@@ -42,24 +42,28 @@ void ProducerMain(SharedRequestQueue& req_queue,
     }
     for (auto& req : reqbuf) {
       req.from = id;
-      req.need_reply = FLAGS_reply;
+      req.need_reply = false;
     }
+    reqbuf.back().need_reply = FLAGS_reply;
+
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(reqbuf.begin()), FLAGS_batch))
       ;
     concurrent_batch++;
     if (concurrent_batch == FLAGS_concurrent_batch) {
+      int comps = 0;
       if (FLAGS_reply) {
-        int comps = 0;
-        while (comps < FLAGS_batch) {
-          comps += resp_queue_ptr->try_dequeue_bulk(respbuf + comps,
-                                                    FLAGS_batch - comps);
+        while (comps == 0) {
+          comps +=
+              resp_queue_ptr->try_dequeue_bulk(respbuf, FLAGS_concurrent_batch);
         }
-        for (int i = 0; i < FLAGS_batch; i++) {
+        for (int i = 0; i < comps; i++) {
           CHECK_EQ(respbuf[i].rc, MITSUME_SUCCESS);
         }
+      } else {
+        comps = 1;
       }
-      concurrent_batch--;
+      concurrent_batch -= comps;
     }
     iterations += FLAGS_batch;
   }
