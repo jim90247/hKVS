@@ -182,6 +182,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   mica_resp resp_arr[NUM_CLIENTS];
   ibv_send_wr wr[NUM_CLIENTS], *bad_send_wr = nullptr;
   ibv_sge sgl[NUM_CLIENTS];
+  // buffer for sending newly added Clover key with IBV_WR_SEND_WITH_IMM
+  mitsume_key mitsume_key_buf[NUM_CLIENTS];
 
   /* If postlist is disabled, remember the cb to send() each @wr from */
   int cb_for_wr[NUM_CLIENTS];
@@ -316,7 +318,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       wr[wr_i].opcode = IBV_WR_SEND_WITH_IMM;
       wr[wr_i].num_sge = 1;
       wr[wr_i].sg_list = &sgl[wr_i];
-      wr[wr_i].imm_data = wrkr_lid;
+      wr[wr_i].imm_data = HerdResponseCode::kNormal;
 
       wr[wr_i].send_flags =
           ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == 0) ? IBV_SEND_SIGNALED : 0;
@@ -389,6 +391,15 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                                 write_reply_opt             // reply_opt
                             });
           }
+        }
+        if (!contain_before && contain_after) {
+          // notify client that this key is available in Clover now
+          wr[i].imm_data = HerdResponseCode::kNewOffload;
+          mitsume_key_buf[i] = key;
+          resp_arr[i].val_len = sizeof(mitsume_key);
+          resp_arr[i].val_ptr =
+              reinterpret_cast<uint8_t *>(&mitsume_key_buf[i]);
+          DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
         }
         if (evicted.has_value()) {
           /* FIXME: "delete" old keys instead of invalidate */

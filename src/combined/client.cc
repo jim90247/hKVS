@@ -17,7 +17,11 @@
 
 using CoroRequestQueue = std::queue<mitsume_key>;
 
-constexpr int DGRAM_BUF_SIZE = 4096;
+// the size of each data gram buffer element
+constexpr uint32_t kDgramEntrySize =
+    sizeof(ibv_grh) +
+    std::max(HERD_VALUE_SIZE, static_cast<int>(sizeof(mitsume_key)));
+constexpr int DGRAM_BUF_SIZE = std::max(4096U, kDgramEntrySize* WINDOW_SIZE);
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 DEFINE_int32(herd_client_ports, 1, "Number of client ports");
@@ -72,11 +76,23 @@ enum class CloverState {
   kReadyToSubmit  // request buffer is full and we're allowed to submit them
 };
 
+/**
+ * @brief Posts receive work requests and aborts on failure.
+ *
+ * @param qp the queue pair
+ * @param wr pointer to the list of work requests
+ */
+void PostRecvWrs(ibv_qp* const qp, ibv_recv_wr* const wr) {
+  ibv_recv_wr* bad;
+  int rc = ibv_post_recv(qp, wr, &bad);
+  LOG_IF(FATAL, rc) << "ibv_post_recv: " << strerror(rc)
+                    << " (wr_id=" << bad->wr_id << ")";
+}
+
 /// HERD thread main function
 void HerdMain(herd_thread_params herd_params, int local_id,
               SharedRequestQueue& req_queue,
               std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
-  int i;
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
@@ -167,8 +183,20 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   struct ibv_sge sgl;
   struct ibv_wc wc[WINDOW_SIZE];
 
-  struct ibv_recv_wr recv_wr[WINDOW_SIZE], *bad_recv_wr;
+  struct ibv_recv_wr recv_wr[WINDOW_SIZE];
   struct ibv_sge recv_sgl[WINDOW_SIZE];
+
+  for (int i = 0; i < WINDOW_SIZE; i++) {
+    recv_sgl[i].addr =
+        reinterpret_cast<uintptr_t>(cb->dgram_buf + i * kDgramEntrySize);
+    recv_sgl[i].length = kDgramEntrySize;
+    recv_sgl[i].lkey = cb->dgram_buf_mr->lkey;
+
+    recv_wr[i].wr_id = i;
+    recv_wr[i].next = (i == WINDOW_SIZE - 1) ? nullptr : &recv_wr[i + 1];
+    recv_wr[i].sg_list = recv_sgl + i;
+    recv_wr[i].num_sge = 1;
+  }
 
   long long rolling_iter = 0; /* For throughput measurement */
   long long nb_tx = 0;        /* Total requests performed or queued */
@@ -183,10 +211,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   clock_gettime(CLOCK_REALTIME, &start);
 
   /* Fill the RECV queue */
-  for (i = 0; i < WINDOW_SIZE; i++) {
-    hrd_post_dgram_recv(cb->dgram_qp[0], (void*)cb->dgram_buf, DGRAM_BUF_SIZE,
-                        cb->dgram_buf_mr->lkey);
-  }
+  PostRecvWrs(cb->dgram_qp[0], recv_wr);
 
   constexpr long kMaxRollingIter = M_1;
   while (1) {
@@ -208,24 +233,28 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       clock_gettime(CLOCK_REALTIME, &start);
     }
 
-    /* Re-fill depleted RECVs */
-    if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
-      for (i = 0; i < WINDOW_SIZE; i++) {
-        recv_sgl[i].length = DGRAM_BUF_SIZE;
-        recv_sgl[i].lkey = cb->dgram_buf_mr->lkey;
-        recv_sgl[i].addr = (uintptr_t)&cb->dgram_buf[0];
-
-        recv_wr[i].sg_list = &recv_sgl[i];
-        recv_wr[i].num_sge = 1;
-        recv_wr[i].next = (i == WINDOW_SIZE - 1) ? NULL : &recv_wr[i + 1];
-      }
-
-      ret = ibv_post_recv(cb->dgram_qp[0], &recv_wr[0], &bad_recv_wr);
-      RAW_CHECK(ret == 0, strerror(ret));
-    }
-
     if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
       hrd_poll_cq(cb->dgram_recv_cq[0], WINDOW_SIZE, wc);
+
+      for (int w = 0; w < WINDOW_SIZE; w++) {
+        unsigned int resp_code = wc[w].imm_data;
+        DCHECK(resp_code == HerdResponseCode::kNormal ||
+               resp_code == HerdResponseCode::kNewOffload);
+
+        if (resp_code == HerdResponseCode::kNewOffload) {
+          /**
+           * Since we're using UD qp, the Global Routing Header (GRH) of the
+           * incoming message will be placed in the first 40 bytes of the
+           * buffer. See https://www.rdmamojo.com/2013/02/02/ibv_post_recv/.
+           */
+          mitsume_key new_key = *reinterpret_cast<volatile mitsume_key*>(
+              cb->dgram_buf + w * kDgramEntrySize + sizeof(ibv_grh));
+          DLOG(INFO) << "New key in Clover " << std::hex << new_key << std::dec;
+        }
+      }
+
+      /* Re-fill depleted RECVs */
+      PostRecvWrs(cb->dgram_qp[0], recv_wr);
     }
 
     wn = hrd_fastrand(&seed) % NUM_WORKERS; /* Choose a worker */
