@@ -391,10 +391,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                                 write_reply_opt             // reply_opt
                             });
           }
-        }
-        if (!contain_before && contain_after) {
           // notify client that this key is available in Clover now
-          wr[i].imm_data = HerdResponseCode::kNewOffload;
+          wr[i].imm_data = HerdResponseCode::kOffloaded;
           mitsume_key_buf[i] = key;
           resp_arr[i].val_len = sizeof(mitsume_key);
           resp_arr[i].val_ptr =

@@ -90,7 +90,7 @@ static_assert(HERD_VALUE_SIZE <= MICA_MAX_VALUE);
 // worker thread
 constexpr int kKeysToOffloadPerWorker = 10000;
 
-enum HerdResponseCode : unsigned int { kNormal = 0, kNewOffload = 1 };
+enum HerdResponseCode : unsigned int { kNormal = 0, kOffloaded = 1 };
 
 /* NOTE: although each herd client uses same set of keys (0~HERD_NUM_KEYS-1),
  * they should be treated as different keys when inserting them into Clover.

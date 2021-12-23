@@ -239,9 +239,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       for (int w = 0; w < WINDOW_SIZE; w++) {
         unsigned int resp_code = wc[w].imm_data;
         DCHECK(resp_code == HerdResponseCode::kNormal ||
-               resp_code == HerdResponseCode::kNewOffload);
+               resp_code == HerdResponseCode::kOffloaded);
 
-        if (resp_code == HerdResponseCode::kNewOffload) {
+        if (resp_code == HerdResponseCode::kOffloaded) {
           /**
            * Since we're using UD qp, the Global Routing Header (GRH) of the
            * incoming message will be placed in the first 40 bytes of the
