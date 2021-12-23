@@ -3,6 +3,7 @@
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
 
+#include <cstring>
 #include <vector>
 
 DEFINE_int32(clover_threads, 4, "Number of clover worker threads");
@@ -21,11 +22,12 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
   while (true) {
     if (req_queue.try_dequeue(ctok, req)) {
       CloverResponse resp{
-          req.id,    // id
-          req.type,  // type,
-          0          // rc
+          req.key,  // key
+          req.id,   // id
+          req.op,   // op
+          0         // rc
       };
-      switch (req.type) {
+      switch (req.op) {
         case CloverRequestType::kInsert:
           resp.rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
           break;
@@ -39,6 +41,12 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
         case CloverRequestType::kRead:
           resp.rc = cn_thread.ReadKVPair(req.key, req.buf, &dummy_len, req.len,
                                          coro, yield);
+          // treat invalidated key as error too
+          if (resp.rc == MITSUME_SUCCESS &&
+              strncmp(reinterpret_cast<char *>(req.buf), kCloverInvalidValue,
+                      req.len) == 0) {
+            resp.rc = MITSUME_ERROR;
+          }
           break;
       }
       if (req.reply_opt == CloverReplyOption::kAlways ||

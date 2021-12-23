@@ -78,7 +78,7 @@ void ConsumerMain(SharedRequestQueue& req_queue,
   moodycamel::ConsumerToken ctok(req_queue);
   while (true) {
     if (req_queue.try_dequeue(ctok, req)) {
-      CloverResponse resp{req.id, req.type, MITSUME_SUCCESS};
+      CloverResponse resp{req.key, req.id, req.op, MITSUME_SUCCESS};
       bar();
       if (req.reply_opt == CloverReplyOption::kAlways) {
         while (!resp_queues.at(req.from)->try_enqueue(resp))

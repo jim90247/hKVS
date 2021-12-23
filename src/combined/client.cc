@@ -7,6 +7,7 @@
 #include <queue>
 #include <set>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "clover_worker.h"
@@ -117,6 +118,8 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   // Clover response buffer
   CloverResponse* clover_resp_buf =
       new CloverResponse[FLAGS_clover_batch * FLAGS_clover_max_cncr];
+  // Stores which keys exist in Clover
+  std::unordered_set<mitsume_key> lookup_table;
   constexpr unsigned int kCloverReadBufEntrySize = 4096;
   // Clover batch id (modulo FLAGS_clover_max_cncr)
   unsigned int clover_bid = 0;
@@ -253,6 +256,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
            */
           mitsume_key new_key = *reinterpret_cast<volatile mitsume_key*>(
               cb->dgram_buf + w * kDgramEntrySize + sizeof(ibv_grh));
+          lookup_table.insert(new_key);
           DLOG(INFO) << "New key in Clover " << std::hex << new_key << std::dec;
         }
       }
@@ -268,45 +272,45 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
-    // TODO: build lookup table
-    if (clover_state == CloverState::kPreparing && !is_update &&
-        key < kKeysToOffloadPerWorker) {
-      /* Process current request using Clover */
+    if (clover_state == CloverState::kPreparing && !is_update) {
       uint128 mica_k = ConvertPlainKeyToHerdKey(key);
-      mitsume_key clover_k = ConvertHerdKeyToCloverKey(
-          reinterpret_cast<mica_key*>(&mica_k), local_id);
-      char* rbuf =
-          clover_read_buf + (FLAGS_clover_batch * clover_bid + clover_req_idx) *
-                                kCloverReadBufEntrySize;
-      // To reduce the amount of responses, requires reply on last request of
-      // each batch. For other requests, ask for reply only when they failed
-      // (used for updating lookup table).
-      CloverReplyOption reply_opt = clover_req_idx == FLAGS_clover_batch - 1
-                                        ? CloverReplyOption::kAlways
-                                        : CloverReplyOption::kOnFailure;
-      clover_req_buf.at(clover_req_idx) = CloverRequest{
-          clover_k,                                          // key
-          rbuf,                                              // buf
-          kCloverReadBufEntrySize,                           // len
-          clover_bid * FLAGS_clover_batch + clover_req_idx,  // id
-          CloverRequestType::kRead,                          // type
-          local_id,                                          // from
-          reply_opt                                          // reply_opt
-      };
-      clover_req_idx++;
+      mitsume_key clover_k =
+          ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), wn);
+      if (lookup_table.find(clover_k) != lookup_table.end()) {
+        /* Process current request using Clover */
+        unsigned int req_id = clover_bid * FLAGS_clover_batch + clover_req_idx;
+        char* rbuf = clover_read_buf + req_id * kCloverReadBufEntrySize;
+        // To reduce the amount of responses, requires reply on last request of
+        // each batch. For other requests, ask for reply only when they failed
+        // (used for updating lookup table).
+        CloverReplyOption reply_opt = clover_req_idx == FLAGS_clover_batch - 1
+                                          ? CloverReplyOption::kAlways
+                                          : CloverReplyOption::kOnFailure;
+        clover_req_buf.at(clover_req_idx) = CloverRequest{
+            clover_k,                  // key
+            rbuf,                      // buf
+            kCloverReadBufEntrySize,   // len
+            req_id,                    // id
+            CloverRequestType::kRead,  // op
+            local_id,                  // from
+            reply_opt                  // reply_opt
+        };
+        clover_req_idx++;
 
-      if (clover_req_idx == FLAGS_clover_batch) {
-        // wait for previous batches to complete if we reach concurrency limit
-        clover_state = avail_batch_ids.find(clover_bid) == avail_batch_ids.end()
-                           ? CloverState::kWaitForResp
-                           : CloverState::kReadyToSubmit;
+        if (clover_req_idx == FLAGS_clover_batch) {
+          // wait for previous batches to complete if we reach concurrency limit
+          clover_state =
+              avail_batch_ids.find(clover_bid) == avail_batch_ids.end()
+                  ? CloverState::kWaitForResp
+                  : CloverState::kReadyToSubmit;
+        }
+
+        // NOTE: use "continue" here will cause blocking at hrd_poll_cq() above
+        // workaround: build next HERD request and send it
+        is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
+        key = trace.at(key_i);
+        key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
       }
-
-      // NOTE: use "continue" here will cause blocking at hrd_poll_cq() above
-      // workaround: build next HERD request and send it
-      is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
-      key = trace.at(key_i);
-      key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
     }
 
     if (clover_state == CloverState::kWaitForResp) {
@@ -314,14 +318,15 @@ void HerdMain(herd_thread_params herd_params, int local_id,
           clover_resp_buf, FLAGS_clover_batch * FLAGS_clover_max_cncr);
 
       for (int j = 0; j < comps; j++) {
-        if (clover_resp_buf[j].id % FLAGS_clover_batch ==
-            FLAGS_clover_batch - 1) {
+        const CloverResponse& resp = clover_resp_buf[j];
+        if (resp.id % FLAGS_clover_batch == FLAGS_clover_batch - 1) {
           clover_comp_batch++;
           // batch id is (request id / batch size)
           avail_batch_ids.insert(clover_resp_buf[j].id / FLAGS_clover_batch);
         }
-        if (clover_resp_buf[j].rc != MITSUME_SUCCESS) {
+        if (resp.rc != MITSUME_SUCCESS) {
           clover_fails++;
+          lookup_table.erase(resp.key);
         }
       }
       if (avail_batch_ids.find(clover_bid) != avail_batch_ids.end()) {

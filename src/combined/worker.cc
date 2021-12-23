@@ -75,7 +75,8 @@ inline bool CheckCloverError(CloverResponse *resp, int n) {
   for (int i = 0; i < n; i++) {
     if (resp[i].rc != MITSUME_SUCCESS) {
       LOG(ERROR) << "Clover request " << resp[i].id
-                 << " failed, type=" << static_cast<int>(resp[i].type)
+                 << " failed, key=" << std::hex << resp[i].key << std::dec
+                 << ", op=" << static_cast<int>(resp[i].op)
                  << ", rc=" << resp[i].rc;
       found_error = true;
     }
@@ -371,7 +372,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                 op_ptr_arr[i]->value,        // buf
                 op_ptr_arr[i]->val_len,      // len
                 clover_insert_req_cnt,       // id
-                CloverRequestType::kInsert,  // type
+                CloverRequestType::kInsert,  // op
                 wrkr_lid,                    // from
                 CloverReplyOption::kAlways   // need_reply
             };
@@ -386,7 +387,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                                 op_ptr_arr[i]->value,       // buf
                                 op_ptr_arr[i]->val_len,     // len
                                 clover_req_cnt,             // id
-                                CloverRequestType::kWrite,  // type
+                                CloverRequestType::kWrite,  // op
                                 wrkr_lid,                   // from
                                 write_reply_opt             // reply_opt
                             });
@@ -408,7 +409,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                               nullptr,                         // buf
                               0,                               // len
                               clover_req_cnt,                  // id
-                              CloverRequestType::kInvalidate,  // type
+                              CloverRequestType::kInvalidate,  // op
                               wrkr_lid,                        // from
                               write_reply_opt                  // reply_opt
                           });

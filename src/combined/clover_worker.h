@@ -23,14 +23,15 @@ struct CloverRequest {
   void *buf;
   int len;
   CloverRequestIdType id;
-  CloverRequestType type;
+  CloverRequestType op;
   int from;
   CloverReplyOption reply_opt;
 };
 
 struct CloverResponse {
+  mitsume_key key;
   CloverRequestIdType id;
-  CloverRequestType type;
+  CloverRequestType op;
   int rc;
 };
 
