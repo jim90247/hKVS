@@ -13,6 +13,9 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
                       SharedRequestQueue &req_queue,
                       const std::vector<SharedResponseQueuePtr> &resp_queues,
                       moodycamel::ConsumerToken &ctok, int coro) {
+  // Special value indicating the corresponding key is invalid
+  thread_local static char kCloverInvalidValue[] = "_clover_err";
+
   CloverRequest req;
   uint32_t dummy_len;
   while (true) {
@@ -26,9 +29,11 @@ void CloverWorkerCoro(coro_yield_t &yield, CloverCnThreadWrapper &cn_thread,
         case CloverRequestType::kInsert:
           resp.rc = cn_thread.InsertKVPair(req.key, req.buf, req.len);
           break;
-        case CloverRequestType::kWrite:
-          [[fallthrough]];
         case CloverRequestType::kInvalidate:
+          req.buf = kCloverInvalidValue;
+          req.len = sizeof(kCloverInvalidValue);
+          [[fallthrough]];
+        case CloverRequestType::kWrite:
           resp.rc = cn_thread.WriteKVPair(req.key, req.buf, req.len);
           break;
         case CloverRequestType::kRead:

@@ -401,14 +401,12 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
         }
         if (evicted.has_value()) {
           /* FIXME: "delete" old keys instead of invalidate */
-          // Special value indicating the correspondin value is invalid
-          thread_local static char invalid_value[] = "error";
-          // invalidate old keys
+          // invalidate old keys. Buffer will be set in worker threads.
           AddNewCloverReq(clover_req_buf, clover_req_cnt,
                           CloverRequest{
-                              key,                             // key
-                              invalid_value,                   // buf
-                              sizeof(invalid_value),           // len
+                              evicted.value(),                 // key
+                              nullptr,                         // buf
+                              0,                               // len
                               clover_req_cnt,                  // id
                               CloverRequestType::kInvalidate,  // type
                               wrkr_lid,                        // from
