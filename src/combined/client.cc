@@ -5,6 +5,7 @@
 
 #include <numeric>
 #include <queue>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -108,8 +109,11 @@ void HerdMain(herd_thread_params herd_params, int local_id,
                                    kCloverReadBufEntrySize]();
   // Current Clover state
   CloverState clover_state = CloverState::kPreparing;
-  // Number of concurrent Clover batches
-  unsigned int clover_cncr = 0;
+  // Free Clover batch ids. Used for limiting maximum concurrency.
+  std::set<unsigned int> avail_batch_ids;
+  for (unsigned int i = 0; i < FLAGS_clover_max_cncr; i++) {
+    avail_batch_ids.insert(i);
+  }
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -264,7 +268,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
       if (clover_req_idx == FLAGS_clover_batch) {
         // wait for previous batches to complete if we reach concurrency limit
-        clover_state = clover_cncr >= FLAGS_clover_max_cncr
+        clover_state = avail_batch_ids.find(clover_bid) == avail_batch_ids.end()
                            ? CloverState::kWaitForResp
                            : CloverState::kReadyToSubmit;
       }
@@ -284,23 +288,25 @@ void HerdMain(herd_thread_params herd_params, int local_id,
         if (clover_resp_buf[j].id % FLAGS_clover_batch ==
             FLAGS_clover_batch - 1) {
           clover_comp_batch++;
-          clover_cncr--;
+          // batch id is (request id / batch size)
+          avail_batch_ids.insert(clover_resp_buf[j].id / FLAGS_clover_batch);
         }
         if (clover_resp_buf[j].rc != MITSUME_SUCCESS) {
           clover_fails++;
         }
       }
-      if (clover_cncr < FLAGS_clover_max_cncr) {
+      if (avail_batch_ids.find(clover_bid) != avail_batch_ids.end()) {
         clover_state = CloverState::kReadyToSubmit;
       }
     }
 
     if (clover_state == CloverState::kReadyToSubmit) {
+      DCHECK(avail_batch_ids.find(clover_bid) != avail_batch_ids.end());
       while (!req_queue.try_enqueue_bulk(ptok, clover_req_buf.begin(),
                                          FLAGS_clover_batch))
         ;
       clover_req_idx = 0;
-      clover_cncr++;
+      avail_batch_ids.erase(clover_bid);
       clover_bid = (clover_bid + 1) % FLAGS_clover_max_cncr;
       clover_state = CloverState::kPreparing;
     }
