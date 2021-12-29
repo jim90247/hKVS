@@ -75,7 +75,8 @@ inline bool CheckCloverError(CloverResponse *resp, int n) {
   for (int i = 0; i < n; i++) {
     if (resp[i].rc != MITSUME_SUCCESS) {
       LOG(ERROR) << "Clover request " << resp[i].id
-                 << " failed, type=" << static_cast<int>(resp[i].type)
+                 << " failed, key=" << std::hex << resp[i].key << std::dec
+                 << ", op=" << static_cast<int>(resp[i].op)
                  << ", rc=" << resp[i].rc;
       found_error = true;
     }
@@ -182,6 +183,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   mica_resp resp_arr[NUM_CLIENTS];
   ibv_send_wr wr[NUM_CLIENTS], *bad_send_wr = nullptr;
   ibv_sge sgl[NUM_CLIENTS];
+  // buffer for sending newly added Clover key with IBV_WR_SEND_WITH_IMM
+  mitsume_key mitsume_key_buf[NUM_CLIENTS];
 
   /* If postlist is disabled, remember the cb to send() each @wr from */
   int cb_for_wr[NUM_CLIENTS];
@@ -316,13 +319,16 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       wr[wr_i].opcode = IBV_WR_SEND_WITH_IMM;
       wr[wr_i].num_sge = 1;
       wr[wr_i].sg_list = &sgl[wr_i];
-      wr[wr_i].imm_data = wrkr_lid;
+      wr[wr_i].imm_data = HerdResponseCode::kNormal;
 
       wr[wr_i].send_flags =
           ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == 0) ? IBV_SEND_SIGNALED : 0;
       if ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == UNSIG_BATCH_) {
         hrd_poll_cq(cb[cb_i]->dgram_send_cq[ud_qp_i], 1, &wc);
       }
+      // NOTE: In current implementation, IBV_SEND_INLINE is required since the
+      // buffer filled in ibv_sge (MICA log) is not a registered memory region.
+      // MICA log buffer is allocated in mica_init().
       wr[wr_i].send_flags |= IBV_SEND_INLINE;
 
       HRD_MOD_ADD(ws[clt_i], WINDOW_SIZE);
@@ -366,7 +372,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                 op_ptr_arr[i]->value,        // buf
                 op_ptr_arr[i]->val_len,      // len
                 clover_insert_req_cnt,       // id
-                CloverRequestType::kInsert,  // type
+                CloverRequestType::kInsert,  // op
                 wrkr_lid,                    // from
                 CloverReplyOption::kAlways   // need_reply
             };
@@ -381,24 +387,29 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                                 op_ptr_arr[i]->value,       // buf
                                 op_ptr_arr[i]->val_len,     // len
                                 clover_req_cnt,             // id
-                                CloverRequestType::kWrite,  // type
+                                CloverRequestType::kWrite,  // op
                                 wrkr_lid,                   // from
                                 write_reply_opt             // reply_opt
                             });
           }
+          // notify client that this key is available in Clover now
+          wr[i].imm_data = HerdResponseCode::kOffloaded;
+          mitsume_key_buf[i] = key;
+          resp_arr[i].val_len = sizeof(mitsume_key);
+          resp_arr[i].val_ptr =
+              reinterpret_cast<uint8_t *>(&mitsume_key_buf[i]);
+          DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
         }
         if (evicted.has_value()) {
           /* FIXME: "delete" old keys instead of invalidate */
-          // Special value indicating the correspondin value is invalid
-          thread_local static char invalid_value[] = "error";
-          // invalidate old keys
+          // invalidate old keys. Buffer will be set in worker threads.
           AddNewCloverReq(clover_req_buf, clover_req_cnt,
                           CloverRequest{
-                              key,                             // key
-                              invalid_value,                   // buf
-                              sizeof(invalid_value),           // len
+                              evicted.value(),                 // key
+                              nullptr,                         // buf
+                              0,                               // len
                               clover_req_cnt,                  // id
-                              CloverRequestType::kInvalidate,  // type
+                              CloverRequestType::kInvalidate,  // op
                               wrkr_lid,                        // from
                               write_reply_opt                  // reply_opt
                           });
