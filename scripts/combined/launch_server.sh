@@ -34,7 +34,7 @@ done
 
 show_message "Reset server QP registry"
 sudo pkill memcached
-memcached -u root -I 128m -m 2048 -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
+memcached -u root -I 1024m -m 2048 -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
 sleep 1
 show_message "Memcached server IP: $HRD_REGISTRY_IP"
 
