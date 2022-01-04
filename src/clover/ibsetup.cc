@@ -834,10 +834,7 @@ int userspace_one_write_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
   MITSUME_STAT_FORCE_ADD(MITSUME_STAT_IB_WRITE, traffic);
   MITSUME_STAT_TRAFFIC_ADD(remote_mr->machine_id, traffic);
 #endif
-  for (int i = 0; i < input_sge_length; i++) {
-    // count each sge separately
-    opctr::RecordOperation(opctr::Operation::kUserspaceOneWriteSge);
-  }
+  opctr::RecordOperation(opctr::Operation::kUserspaceOneWriteSge);
   return 0;
 }
 
@@ -872,10 +869,7 @@ int userspace_one_read_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
   MITSUME_STAT_FORCE_ADD(MITSUME_STAT_IB_READ, traffic);
   MITSUME_STAT_TRAFFIC_ADD(remote_mr->machine_id, traffic);
 #endif
-  for (int i = 0; i < input_sge_length; i++) {
-    // count each sge separately
-    opctr::RecordOperation(opctr::Operation::kUserspaceOneReadSge);
-  }
+  opctr::RecordOperation(opctr::Operation::kUserspaceOneReadSge);
   return 0;
 }
 
