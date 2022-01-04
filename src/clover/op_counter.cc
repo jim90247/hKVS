@@ -9,11 +9,11 @@ namespace opctr {
 // The mapping from operation to their names
 const std::vector<std::string> op_names = {
     "userspace_one_read",
-    "userspace_one_read_sge (one per sge)",
+    "userspace_one_read_sge",
     "userspace_one_send",
     "userspace_one_write",
     "userspace_one_write_inline",
-    "userspace_one_write_sge (one per sge)",
+    "userspace_one_write_sge",
     "userspace_one_cs"};
 
 thread_local int thread_id = -1;
