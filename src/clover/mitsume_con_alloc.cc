@@ -6,27 +6,27 @@ const unsigned long long int MIN_LH_IN_ONE_NODE =
     MITSUME_MEMORY_LH_CUT_MAX_UNIT;
 unsigned long long int MITSUME_PER_NODE_LH;
 
-const unsigned long long int set_lhnum[9] = {
-    MIN_LH_IN_ONE_NODE / 100 * 1,   // 128
-    MIN_LH_IN_ONE_NODE / 100 * 2,   // 256
-    MIN_LH_IN_ONE_NODE / 100 * 3,   // 512
-    MIN_LH_IN_ONE_NODE / 100 * 98,  // 1024
-    MIN_LH_IN_ONE_NODE / 100 * 15,  // 2048
-    MIN_LH_IN_ONE_NODE / 100 * 95,  // 4096
-    MIN_LH_IN_ONE_NODE / 100 * 96,  // 8192
-    MIN_LH_IN_ONE_NODE / 100 * 98}; // latency design
+/**
+ * @brief Prefix sum of the size of slab sets.
+ *
+ * There are multiple sets of slabs with different chunk sizes. Set i are slabs
+ * with chunk size MITSUME_CON_ALLOCATOR_SLAB_SIZE_GRANULARITY << i. The number
+ * of slabs in i-th set (size of i-th slab set) is max(0, set_lhnum[i] -
+ * set_lhnum[i-1]), or set_lhnum[i] if i is 0.
+ */
+const static unsigned long long set_lhnum[MITSUME_CON_ALLOCATOR_SLAB_NUMBER] = {
+    MIN_LH_IN_ONE_NODE / 100 * 20,
+    MIN_LH_IN_ONE_NODE / 100 * 20,
+    MIN_LH_IN_ONE_NODE / 100 * 20,
+    MIN_LH_IN_ONE_NODE / 100 * 20,
+    MIN_LH_IN_ONE_NODE / 100 * 98,
+    MIN_LH_IN_ONE_NODE / 100 * 98,
+    MIN_LH_IN_ONE_NODE / 100 * 98,
+    MIN_LH_IN_ONE_NODE / 100 * 98,
+    MIN_LH_IN_ONE_NODE};
 
-/*const unsigned long long int set_lhnum[9]={
-    MIN_LH_IN_ONE_NODE/100*3,      //128
-    MIN_LH_IN_ONE_NODE/100*6,     //256
-    MIN_LH_IN_ONE_NODE/100*9,     //512
-    MIN_LH_IN_ONE_NODE/100*90,     //1024
-    MIN_LH_IN_ONE_NODE/100*92,     //2048
-    MIN_LH_IN_ONE_NODE/100*94,     //4096
-    MIN_LH_IN_ONE_NODE/100*96,     //8192
-    MIN_LH_IN_ONE_NODE/100*98};    //latency design*/
-
-unsigned long long int real_lhnum[9] = {0}; // set by init
+static unsigned long long real_lhnum[MITSUME_CON_ALLOCATOR_SLAB_NUMBER] = {
+    0};  // set by init
 
 unsigned long long int mitsume_con_alloc_get_total_lh() {
   return MITSUME_PER_NODE_LH * MITSUME_MEM_NUM;
@@ -94,49 +94,25 @@ uint32_t mitsume_con_alloc_pointer_to_size(uint64_t pointer,
          sizeof(struct mitsume_ptr) * replication_factor - MITSUME_CRC_SIZE;
 }
 
+/// Maps the internal lh to slab set id.
 int mitsume_con_alloc_internal_lh_to_list_num(uint64_t internal_lh) {
-  // 32,56,72,88,96,104,112,120,128
-  if (internal_lh < set_lhnum[0]) // 246
-    return 0;                     // first 32 LH always map to queue 0 (128B)
-  if (internal_lh < set_lhnum[1]) // 256
-    return 1;                     // 32-55 always map to queue 1(256B)
-  if (internal_lh < set_lhnum[2])
-    return 2; // 56-71 always map to queue 2(512B)
-  if (internal_lh < set_lhnum[3])
-    return 3; // 72-87 always map to queue 3(1024B)
-  if (internal_lh < set_lhnum[4])
-    return 4;                     // 88-95 always map to queue 4(2048B)
-  if (internal_lh < set_lhnum[5]) // 736 //642
-    return 5;                     // 96-103 always map to queue 5(4096B)
-  if (internal_lh < set_lhnum[6])
-    return 6; // 104-111 always map to queue 6(8192B)
-  if (internal_lh < set_lhnum[7])
-    return 7; // 111-119 always map to queue 7(16384B)
-  return 8;   // 120-127 always map to queue 8(32768B)
-  return -1;
+  int i;
+  for (i = 0; i < MITSUME_CON_ALLOCATOR_SLAB_NUMBER - 1; i++) {
+    if (internal_lh < set_lhnum[i]) {
+      break;
+    }
+  }
+  return i;
 }
 
+/// Maps the raw lh to slab set id.
 int mitsume_con_alloc_lh_to_list_num(uint64_t raw_lh) {
   uint64_t lh = raw_lh % MITSUME_PER_NODE_LH;
-  // 32,56,72,88,96,104,112,120,128
-  if (lh < real_lhnum[0]) // 246
-    return 0;             // first 32 LH always map to queue 0 (128B)
-  if (lh < real_lhnum[1]) // 256
-    return 1;             // 32-55 always map to queue 1(256B)
-  if (lh < real_lhnum[2])
-    return 2; // 56-71 always map to queue 2(512B)
-  if (lh < real_lhnum[3])
-    return 3; // 72-87 always map to queue 3(1024B)
-  if (lh < real_lhnum[4])
-    return 4;             // 88-95 always map to queue 4(2048B)
-  if (lh < real_lhnum[5]) // 736 //642
-    return 5;             // 96-103 always map to queue 5(4096B)
-  if (lh < real_lhnum[6])
-    return 6; // 104-111 always map to queue 6(8192B)
-  if (lh < real_lhnum[7])
-    return 7; // 111-119 always map to queue 7(16384B)
-  if (lh < real_lhnum[8])
-    return 8; // 120-127 always map to queue 8(32768B)
+  for (int i = 0; i < MITSUME_CON_ALLOCATOR_SLAB_NUMBER; i++) {
+    if (lh < real_lhnum[i]) {
+      return i;
+    }
+  }
   die_printf("lh too large - %llu\n", lh);
   return -1;
 }
@@ -212,6 +188,7 @@ int mitsume_con_alloc_share_init(void) {
   return MITSUME_SUCCESS;
 }
 
+/// Publishes lh information into memcached.
 int mitsume_con_alloc_populate_lh(struct mitsume_ctx_con *local_ctx_con) {
   char memcached_string[MEMCACHED_MAX_NAME_LEN];
   unsigned long long int i;
@@ -230,6 +207,7 @@ int mitsume_con_alloc_populate_lh(struct mitsume_ctx_con *local_ctx_con) {
   return MITSUME_SUCCESS;
 }
 
+/// Gets lh information from memcached.
 int mitsume_con_alloc_get_lh(struct mitsume_ctx_con *local_ctx_con,
                              struct mitsume_ctx_clt *local_ctx_clt) {
   assert(local_ctx_con || local_ctx_clt);    // one of it should be TRUE
