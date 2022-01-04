@@ -188,6 +188,7 @@ int mitsume_con_alloc_share_init(void) {
   return MITSUME_SUCCESS;
 }
 
+/// Publishes lh information into memcached.
 int mitsume_con_alloc_populate_lh(struct mitsume_ctx_con *local_ctx_con) {
   char memcached_string[MEMCACHED_MAX_NAME_LEN];
   unsigned long long int i;
@@ -206,6 +207,7 @@ int mitsume_con_alloc_populate_lh(struct mitsume_ctx_con *local_ctx_con) {
   return MITSUME_SUCCESS;
 }
 
+/// Gets lh information from memcached.
 int mitsume_con_alloc_get_lh(struct mitsume_ctx_con *local_ctx_con,
                              struct mitsume_ctx_clt *local_ctx_clt) {
   assert(local_ctx_con || local_ctx_clt);    // one of it should be TRUE
