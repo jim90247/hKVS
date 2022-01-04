@@ -9,31 +9,31 @@ ENABLE_DGB :=
 
 HOTS_HOME := .
 MICA_HOME := ../../mica2/src
+BOOST_HOME := $${HOME}/.local/boost_1_76_0
 
-INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I $${HOME}/.local/boost_1_76_0/include
+INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I ${BOOST_HOME}/include
 
-#DEBUG := -DNDEBUG
-CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++14 ${INC} -Wall -Werror -g \
+DEBUG := -DNDEBUG
+CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++14 ${INC} -Wall -g \
 	-Wno-unused-result \
 	-Wno-unused-value \
 	-Wno-unused-function \
 	-Wno-sign-compare \
-        -D BOOST_COROUTINES_NO_DEPRECATION_WARNING
-	#-Winline
+    -DBOOST_COROUTINES_NO_DEPRECATION_WARNING
 
-LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -pthread -lmemcached -lnuma -g \
+LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lmemcached -lnuma -g \
 	-lpapi -lboost_system -lboost_coroutine -lboost_thread \
-	-L $${HOME}/.local/boost_1_76_0/lib
+	-L ${BOOST_HOME}/lib
 
 src := ibsetup.o memcached.o \
-	mitsume_macro.o mitsume_util.o\
+	mitsume_macro.o mitsume_util.o \
 	mitsume_struct.o \
 	init.o \
 	memory.o client.o server.o \
 	mitsume_con_alloc.o mitsume_con_thread.o \
 	mitsume_clt_tool.o mitsume_clt_thread.o mitsume_clt_test.o \
 	mitsume_tool.o mitsume_tool_cache.o mitsume_tool_gc.o \
-	mitsume_stat.o\
+	mitsume_stat.o \
 	mitsume_benchmark.o \
 	op_counter.o
 
