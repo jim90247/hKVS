@@ -272,7 +272,8 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     int key = trace.at(key_i);
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
-    if (clover_state == CloverState::kPreparing && !is_update) {
+    if (clover_state == CloverState::kPreparing && !is_update &&
+        FLAGS_clover_threads > 0) {
       uint128 mica_k = ConvertPlainKeyToHerdKey(key);
       mitsume_key clover_k =
           ConvertHerdKeyToCloverKey(reinterpret_cast<mica_key*>(&mica_k), wn);
