@@ -183,8 +183,6 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   mica_resp resp_arr[NUM_CLIENTS];
   ibv_send_wr wr[NUM_CLIENTS], *bad_send_wr = nullptr;
   ibv_sge sgl[NUM_CLIENTS];
-  // buffer for sending newly added Clover key with IBV_WR_SEND_WITH_IMM
-  mitsume_key mitsume_key_buf[NUM_CLIENTS];
 
   /* If postlist is disabled, remember the cb to send() each @wr from */
   int cb_for_wr[NUM_CLIENTS];
@@ -393,11 +391,8 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                             });
           }
           // notify client that this key is available in Clover now
-          wr[i].imm_data = HerdResponseCode::kOffloaded;
-          mitsume_key_buf[i] = key;
-          resp_arr[i].val_len = sizeof(mitsume_key);
-          resp_arr[i].val_ptr =
-              reinterpret_cast<uint8_t *>(&mitsume_key_buf[i]);
+          wr[i].imm_data =
+              (HerdResponseCode::kOffloaded << 8) + op_ptr_arr[i]->seq;
           DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
         }
         if (evicted.has_value()) {

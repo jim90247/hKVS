@@ -189,6 +189,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   struct ibv_send_wr wr, *bad_send_wr;
   struct ibv_sge sgl;
   struct ibv_wc wc[WINDOW_SIZE];
+  mitsume_key req_keys[WINDOW_SIZE];
 
   struct ibv_recv_wr recv_wr[WINDOW_SIZE];
   struct ibv_sge recv_sgl[WINDOW_SIZE];
@@ -244,20 +245,15 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       hrd_poll_cq(cb->dgram_recv_cq[0], WINDOW_SIZE, wc);
 
       for (int w = 0; w < WINDOW_SIZE; w++) {
-        unsigned int resp_code = wc[w].imm_data;
+        uint8_t seq = wc[w].imm_data & 0xffU;
+        unsigned int resp_code = wc[w].imm_data >> 8;
         DCHECK(resp_code == HerdResponseCode::kNormal ||
                resp_code == HerdResponseCode::kOffloaded);
 
         if (resp_code == HerdResponseCode::kOffloaded) {
-          /**
-           * Since we're using UD qp, the Global Routing Header (GRH) of the
-           * incoming message will be placed in the first 40 bytes of the
-           * buffer. See https://www.rdmamojo.com/2013/02/02/ibv_post_recv/.
-           */
-          mitsume_key new_key = *reinterpret_cast<volatile mitsume_key*>(
-              cb->dgram_buf + w * kDgramEntrySize + sizeof(ibv_grh));
-          lookup_table.insert(new_key);
-          DLOG(INFO) << "New key in Clover " << std::hex << new_key << std::dec;
+          lookup_table.insert(req_keys[seq]);
+          DLOG(INFO) << "New key in Clover " << std::hex << req_keys[seq]
+                     << std::dec;
         }
       }
 
@@ -347,7 +343,11 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
     *(uint128*)req_buf = ConvertPlainKeyToHerdKey(key);
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
+    req_buf->seq = static_cast<uint8_t>(nb_tx % WINDOW_SIZE);
     req_buf->val_len = is_update ? HERD_VALUE_SIZE : -1;
+
+    req_keys[nb_tx % WINDOW_SIZE] =
+        ConvertHerdKeyToCloverKey(&req_buf->key, wn);
 
     /* Forge the RDMA work request */
     sgl.length = is_update ? HERD_PUT_REQ_SIZE : HERD_GET_REQ_SIZE;

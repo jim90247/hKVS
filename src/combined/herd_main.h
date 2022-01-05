@@ -25,10 +25,10 @@ constexpr int HERD_NUM_KEYS = 8 * 1024 * 1024;
 constexpr int HERD_VALUE_SIZE = 32;
 
 /* Request sizes */
-constexpr int HERD_GET_REQ_SIZE = 16 + 1; /* 16 byte key + opcode */
+constexpr int HERD_GET_REQ_SIZE = 16 + 1 + 1; /* 16 byte key + opcode + seq */
 
-/* Key, op, len, val */
-constexpr int HERD_PUT_REQ_SIZE = 16 + 1 + 1 + HERD_VALUE_SIZE;
+/* Key, op, seq. len, val */
+constexpr int HERD_PUT_REQ_SIZE = 16 + 1 + 1 + 1 + HERD_VALUE_SIZE;
 
 /* Configuration options */
 constexpr int MAX_SERVER_PORTS = 4;
