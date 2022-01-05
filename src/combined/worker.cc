@@ -349,27 +349,23 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
     // here.
     unsigned int clover_req_cnt = 0, clover_insert_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
-      if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         // We've modified HERD to use 64-bit hash and place the hash result in
         // the second 8 bytes of mica_key.
         mitsume_key key =
             ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
+      if (op_ptr_arr[i]->opcode == MICA_OP_GET &&
+          resp_arr[i].type == MICA_RESP_GET_SUCCESS) {
         bool contain_before = lru.Contain(key);
         auto evicted = lru.Put(key);
         bool contain_after = lru.Contain(key);
-        // it is possible that contain_after is false:
-        // 'occurrences in current time window' < FLAGS_lru_min_count
-        // Insert or update the value in Clover only when it is in LRU.
+
         if (contain_after) {
-          // FIXME: once "Clover deletion" is implemented, change the following
-          // condition to:
-          // if (!contain_before)
           if (inserted_keys.find(key) == inserted_keys.end()) {
-            // Should insert this key
+            // Insert this key to Clover
             CloverRequest req{
                 key,                         // key
-                op_ptr_arr[i]->value,        // buf
-                op_ptr_arr[i]->val_len,      // len
+                resp_arr[i].val_ptr,         // buf
+                resp_arr[i].val_len,         // len
                 clover_insert_req_cnt,       // id
                 CloverRequestType::kInsert,  // op
                 wrkr_lid,                    // from
@@ -379,12 +375,13 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
               ;
             clover_insert_req_cnt++;
             inserted_keys.insert(key);
-          } else {
+          } else if (!contain_before) {
+            // re-validate the value
             AddNewCloverReq(clover_req_buf, clover_req_cnt,
                             CloverRequest{
                                 key,                        // key
-                                op_ptr_arr[i]->value,       // buf
-                                op_ptr_arr[i]->val_len,     // len
+                                resp_arr[i].val_ptr,        // buf
+                                resp_arr[i].val_len,        // len
                                 clover_req_cnt,             // id
                                 CloverRequestType::kWrite,  // op
                                 wrkr_lid,                   // from
@@ -410,6 +407,20 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                               write_reply_opt                  // reply_opt
                           });
           num_lru_eviction++;
+        }
+      } else if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
+        if (lru.Contain(key) &&
+            inserted_keys.find(key) != inserted_keys.end()) {
+          AddNewCloverReq(clover_req_buf, clover_req_cnt,
+                          CloverRequest{
+                              key,                        // key
+                              op_ptr_arr[i]->value,       // buf
+                              op_ptr_arr[i]->val_len,     // len
+                              clover_req_cnt,             // id
+                              CloverRequestType::kWrite,  // op
+                              wrkr_lid,                   // from
+                              write_reply_opt             // reply_opt
+                          });
         }
       }
     }
