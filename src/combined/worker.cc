@@ -97,6 +97,10 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   // insertion-eviction of less popular keys.
   LruRecordsWithMinCount<mitsume_key> lru(FLAGS_lru_size, FLAGS_lru_window,
                                           FLAGS_lru_min_count);
+  // Counter for sampling read requests.
+  unsigned int lru_sample_cntr = 0;
+  // Update LRU every lru_sample_freq read requests.
+  constexpr unsigned int lru_sample_freq = 256;
   // FIXME: a temporary workaround to prevent repeating insertion
   std::unordered_set<mitsume_key> inserted_keys;
   // Request queue producer token for this worker thread
@@ -349,65 +353,68 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
     // here.
     unsigned int clover_req_cnt = 0, clover_insert_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
-        // We've modified HERD to use 64-bit hash and place the hash result in
-        // the second 8 bytes of mica_key.
-        mitsume_key key =
-            ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
+      // We've modified HERD to use 64-bit hash and place the hash result in
+      // the second 8 bytes of mica_key.
+      mitsume_key key =
+          ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
       if (op_ptr_arr[i]->opcode == MICA_OP_GET &&
           resp_arr[i].type == MICA_RESP_GET_SUCCESS) {
-        bool contain_before = lru.Contain(key);
-        auto evicted = lru.Put(key);
-        bool contain_after = lru.Contain(key);
+        if (lru_sample_cntr == 0) {
+          bool contain_before = lru.Contain(key);
+          auto evicted = lru.Put(key);
+          bool contain_after = lru.Contain(key);
 
-        if (contain_after) {
-          if (inserted_keys.find(key) == inserted_keys.end()) {
-            // Insert this key to Clover
-            CloverRequest req{
-                key,                         // key
-                resp_arr[i].val_ptr,         // buf
-                resp_arr[i].val_len,         // len
-                clover_insert_req_cnt,       // id
-                CloverRequestType::kInsert,  // op
-                wrkr_lid,                    // from
-                CloverReplyOption::kAlways   // need_reply
-            };
-            while (!req_queue.try_enqueue(ptok, req))
-              ;
-            clover_insert_req_cnt++;
-            inserted_keys.insert(key);
-          } else if (!contain_before) {
-            // re-validate the value
+          if (contain_after) {
+            if (inserted_keys.find(key) == inserted_keys.end()) {
+              // Insert this key to Clover
+              CloverRequest req{
+                  key,                         // key
+                  resp_arr[i].val_ptr,         // buf
+                  resp_arr[i].val_len,         // len
+                  clover_insert_req_cnt,       // id
+                  CloverRequestType::kInsert,  // op
+                  wrkr_lid,                    // from
+                  CloverReplyOption::kAlways   // need_reply
+              };
+              while (!req_queue.try_enqueue(ptok, req))
+                ;
+              clover_insert_req_cnt++;
+              inserted_keys.insert(key);
+            } else if (!contain_before) {
+              // re-validate the value
+              AddNewCloverReq(clover_req_buf, clover_req_cnt,
+                              CloverRequest{
+                                  key,                        // key
+                                  resp_arr[i].val_ptr,        // buf
+                                  resp_arr[i].val_len,        // len
+                                  clover_req_cnt,             // id
+                                  CloverRequestType::kWrite,  // op
+                                  wrkr_lid,                   // from
+                                  write_reply_opt             // reply_opt
+                              });
+            }
+            // notify client that this key is available in Clover now
+            wr[i].imm_data =
+                (HerdResponseCode::kOffloaded << 8) + op_ptr_arr[i]->seq;
+            DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
+          }
+          if (evicted.has_value()) {
+            /* FIXME: "delete" old keys instead of invalidate */
+            // invalidate old keys. Buffer will be set in worker threads.
             AddNewCloverReq(clover_req_buf, clover_req_cnt,
                             CloverRequest{
-                                key,                        // key
-                                resp_arr[i].val_ptr,        // buf
-                                resp_arr[i].val_len,        // len
-                                clover_req_cnt,             // id
-                                CloverRequestType::kWrite,  // op
-                                wrkr_lid,                   // from
-                                write_reply_opt             // reply_opt
+                                evicted.value(),                 // key
+                                nullptr,                         // buf
+                                0,                               // len
+                                clover_req_cnt,                  // id
+                                CloverRequestType::kInvalidate,  // op
+                                wrkr_lid,                        // from
+                                write_reply_opt                  // reply_opt
                             });
+            num_lru_eviction++;
           }
-          // notify client that this key is available in Clover now
-          wr[i].imm_data =
-              (HerdResponseCode::kOffloaded << 8) + op_ptr_arr[i]->seq;
-          DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
         }
-        if (evicted.has_value()) {
-          /* FIXME: "delete" old keys instead of invalidate */
-          // invalidate old keys. Buffer will be set in worker threads.
-          AddNewCloverReq(clover_req_buf, clover_req_cnt,
-                          CloverRequest{
-                              evicted.value(),                 // key
-                              nullptr,                         // buf
-                              0,                               // len
-                              clover_req_cnt,                  // id
-                              CloverRequestType::kInvalidate,  // op
-                              wrkr_lid,                        // from
-                              write_reply_opt                  // reply_opt
-                          });
-          num_lru_eviction++;
-        }
+        HRD_MOD_ADD(lru_sample_cntr, lru_sample_freq);
       } else if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         if (lru.Contain(key) &&
             inserted_keys.find(key) != inserted_keys.end()) {
