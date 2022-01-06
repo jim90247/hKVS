@@ -1,6 +1,6 @@
-CFLAGS  := -O3 -Wall -Werror -Wno-unused-result -I ../libhrd/
+CFLAGS  := -O3 -Wall -Wno-unused-result -I ../libhrd/ -I ../
 LD      := gcc -O3
-LDFLAGS := ${LDFLAGS} -lrt -lpthread -lnuma -libverbs -lmemcached
+LDFLAGS := ${LDFLAGS} -lrt -ldl -lpthread -lnuma -libverbs -lmemcached
 
 APPS    := test
 
