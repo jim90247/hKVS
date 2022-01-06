@@ -3,9 +3,11 @@
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
 
+#include <fstream>
 #include <numeric>
 #include <queue>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <unordered_set>
 #include <vector>
@@ -95,6 +97,13 @@ void PostRecvWrs(ibv_qp* const qp, ibv_recv_wr* const wr) {
 void HerdMain(herd_thread_params herd_params, int local_id,
               SharedRequestQueue& req_queue,
               std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
+  constexpr size_t kLastSentKeysSize = 8UL << 20;
+  std::vector<int> last_herd_keys(kLastSentKeysSize, -1);
+  size_t last_herd_keys_idx = 0;
+  std::vector<int> last_all_keys(kLastSentKeysSize, -1);
+  size_t last_all_keys_idx = 0;
+  std::set<int> inserted_keys;
+
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
@@ -190,6 +199,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   struct ibv_sge sgl;
   struct ibv_wc wc[WINDOW_SIZE];
   mitsume_key req_keys[WINDOW_SIZE];
+  int req_raw_keys[WINDOW_SIZE];
 
   struct ibv_recv_wr recv_wr[WINDOW_SIZE];
   struct ibv_sge recv_sgl[WINDOW_SIZE];
@@ -239,6 +249,34 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       clover_fails = 0;
 
       clock_gettime(CLOCK_REALTIME, &start);
+
+      {
+        std::stringstream ss;
+        ss << "/tmp/herd_" << local_id << ".dat";
+        std::string fname = ss.str();
+        std::fstream fout(fname, std::ios::out | std::ios::binary);
+        fout.write((char*)last_herd_keys.data(),
+                   last_herd_keys.size() * sizeof(int));
+        fout.close();
+      }
+      {
+        stringstream ss2;
+        ss2 << "/tmp/full_" << local_id << ".dat";
+        string fname2 = ss2.str();
+        std::fstream fout2(fname2, std::ios::out | std::ios::binary);
+        fout2.write((char*)last_all_keys.data(),
+                    last_all_keys.size() * sizeof(int));
+        fout2.close();
+      }
+      {
+        stringstream ss;
+        ss << "/tmp/offloaded_" << local_id << ".dat";
+        string fname = ss.str();
+        std::fstream fout(fname, ios::out | ios::binary);
+        std::vector<int> keys(inserted_keys.begin(), inserted_keys.end());
+        fout.write((char*)keys.data(), keys.size() * sizeof(int));
+        fout.close();
+      }
     }
 
     if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
@@ -252,6 +290,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
         if (resp_code == HerdResponseCode::kOffloaded) {
           lookup_table.insert(req_keys[seq]);
+          inserted_keys.insert(req_raw_keys[seq]);
           DLOG(INFO) << "New key in Clover " << std::hex << req_keys[seq]
                      << std::dec;
         }
@@ -302,6 +341,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
                   : CloverState::kReadyToSubmit;
         }
 
+        last_all_keys.at(last_all_keys_idx) = key;
+        HRD_MOD_ADD(last_all_keys_idx, kLastSentKeysSize);
+
         // NOTE: use "continue" here will cause blocking at hrd_poll_cq() above
         // workaround: build next HERD request and send it
         is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
@@ -349,6 +391,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
     req_keys[nb_tx % WINDOW_SIZE] =
         ConvertHerdKeyToCloverKey(&req_buf->key, wn);
+    req_raw_keys[nb_tx % WINDOW_SIZE] = key;
 
     /* Forge the RDMA work request */
     sgl.length = is_update ? HERD_PUT_REQ_SIZE : HERD_GET_REQ_SIZE;
@@ -372,7 +415,10 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     ret = ibv_post_send(cb->conn_qp[0], &wr, &bad_send_wr);
     RAW_CHECK(ret == 0, strerror(ret));
     // printf("Client %d: sending request index %lld\n", clt_gid, nb_tx);
-
+    last_herd_keys.at(last_herd_keys_idx) = key;
+    HRD_MOD_ADD(last_herd_keys_idx, kLastSentKeysSize);
+    last_all_keys.at(last_all_keys_idx) = key;
+    HRD_MOD_ADD(last_all_keys_idx, kLastSentKeysSize);
     rolling_iter++;
     nb_tx++;
     HRD_MOD_ADD(ws[wn], WINDOW_SIZE);
