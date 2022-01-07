@@ -120,9 +120,9 @@ void mica_insert_one(struct mica_kv* kv, struct mica_op* op,
   /* Paste the key-value into the log */
   uint8_t* log_ptr = &kv->ht_log[kv->log_head & kv->log_mask];
 
-  /* Data copied: key, opcode, val_len, value */
+  /* Data copied: key, metadata, value */
   int len_to_copy =
-      sizeof(struct mica_key) + sizeof(uint8_t) + sizeof(uint8_t) + op->val_len;
+      sizeof(struct mica_key) + MICA_OBJ_METADATA_SIZE + op->val_len;
 
   /* Ensure that we don't wrap around in the *virtual* log space even
    * after 8-byte alignment below.*/
