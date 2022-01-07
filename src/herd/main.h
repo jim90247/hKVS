@@ -1,5 +1,7 @@
 #include <stdint.h>
 
+#include "mica/mica.h"
+
 /*
  * The polling logic in HERD requires the following:
  * 1. 0 < MICA_OP_GET < MICA_OP_PUT < HERD_OP_GET < HERD_OP_PUT
@@ -21,10 +23,10 @@
 #define HERD_VALUE_SIZE 32
 
 /* Request sizes */
-#define HERD_GET_REQ_SIZE (16 + 1) /* 16 byte key + opcode */
+#define HERD_GET_REQ_SIZE (16 + 1 + 1) /* 16 byte key + opcode + seq */
 
-/* Key, op, len, val */
-#define HERD_PUT_REQ_SIZE (16 + 1 + 1 + HERD_VALUE_SIZE)
+/* Key, metadata, val */
+#define HERD_PUT_REQ_SIZE (16 + MICA_OBJ_METADATA_SIZE + HERD_VALUE_SIZE)
 
 /* Configuration options */
 #define MAX_SERVER_PORTS 4
