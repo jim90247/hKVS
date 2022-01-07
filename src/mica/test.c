@@ -97,7 +97,7 @@ void* test_batch_op(void* arg) {
           for (k = 0; k < resp_arr[j].val_len; k++) {
             sum += resp_arr[j].val_ptr[k];
 #if TEST_VERIFY_VAL == 1
-            uint8_t exp_val = op_ptr_arr[j]->key.val;
+            uint8_t exp_val = op_ptr_arr[j]->key.tag;
             assert(resp_arr[j].val_ptr[k] == exp_val);
 #endif
           }
