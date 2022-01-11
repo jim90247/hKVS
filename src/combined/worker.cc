@@ -140,6 +140,16 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   req_buf = static_cast<volatile mica_op *>(shmat(sid, 0, 0));
   RAW_CHECK(req_buf != (void *)-1, "shmat failed");
 
+  ibv_mr **mica_log_mrs = nullptr;
+  if (HERD_VALUE_SIZE > kInlineCutOff) {
+    mica_log_mrs = new ibv_mr *[num_server_ports];
+    for (i = 0; i < num_server_ports; i++) {
+      mica_log_mrs[i] = ibv_reg_mr(cb[i]->pd, kv.ht_log, HERD_LOG_CAP, 0);
+      CHECK_NOTNULL(mica_log_mrs[i]);
+    }
+    LOG(INFO) << "MICA log registered to PD, size=" << HERD_LOG_CAP;
+  }
+
   /* Create an address handle for each client */
   ibv_ah *ah[NUM_CLIENTS];
   memset(ah, 0, NUM_CLIENTS * sizeof(uintptr_t));
@@ -329,10 +339,11 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       if ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == UNSIG_BATCH_) {
         hrd_poll_cq(cb[cb_i]->dgram_send_cq[ud_qp_i], 1, &wc);
       }
-      // NOTE: In current implementation, IBV_SEND_INLINE is required since the
-      // buffer filled in ibv_sge (MICA log) is not a registered memory region.
-      // MICA log buffer is allocated in mica_init().
-      wr[wr_i].send_flags |= IBV_SEND_INLINE;
+      if (HERD_VALUE_SIZE <= kInlineCutOff) {
+        wr[wr_i].send_flags |= IBV_SEND_INLINE;
+      } else {
+        sgl[wr_i].lkey = mica_log_mrs[ud_qp_i]->lkey;
+      }
 
       HRD_MOD_ADD(ws[clt_i], WINDOW_SIZE);
 

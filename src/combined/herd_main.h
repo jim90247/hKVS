@@ -23,6 +23,9 @@ constexpr int HERD_LOG_CAP = 1024 * 1024 * 1024;
 
 constexpr int HERD_NUM_KEYS = 8 * 1024 * 1024;
 constexpr int HERD_VALUE_SIZE = 32;
+/// Send/write can be inlined if the value size does not exceed this value.
+constexpr int kInlineCutOff =
+    HRD_MAX_INLINE - (sizeof(mica_key) + MICA_OBJ_METADATA_SIZE);
 
 /* Request sizes */
 constexpr int HERD_GET_REQ_SIZE = 16 + 1 + 1; /* 16 byte key + opcode + seq */

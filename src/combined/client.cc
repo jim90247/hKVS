@@ -181,10 +181,26 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   /* Some tracking info */
   int ws[NUM_WORKERS] = {0}; /* Window slot to use for a worker */
 
-  struct mica_op* req_buf =
-      reinterpret_cast<mica_op*>(memalign(4096, sizeof(mica_op)));
-  RAW_CHECK(req_buf != nullptr,
-            "Failed to allocate 4KB-aligned request buffer");
+  mica_op* req_buf = nullptr;
+
+  // Used for inlined writes
+  mica_op* inl_buf = static_cast<mica_op*>(memalign(4096, sizeof(mica_op)));
+  CHECK_NOTNULL(inl_buf);
+
+  // Used for non-inlined writes
+  mica_op* non_inl_buf = nullptr;
+  ibv_mr* non_inl_mr = nullptr;
+  int non_inl_idx = 0;
+  if (HERD_VALUE_SIZE > kInlineCutOff) {
+    constexpr int buf_size = sizeof(mica_op) * WINDOW_SIZE;
+    non_inl_buf = static_cast<mica_op*>(memalign(4096, buf_size));
+    CHECK_NOTNULL(non_inl_buf);
+
+    non_inl_mr = ibv_reg_mr(cb->pd, non_inl_buf, buf_size, 0);
+    CHECK_NOTNULL(non_inl_mr);
+
+    LOG(INFO) << "non_inl_buf registered to PD, size=" << buf_size;
+  }
 
   struct ibv_send_wr wr, *bad_send_wr;
   struct ibv_sge sgl;
@@ -257,6 +273,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
         }
       }
 
+      non_inl_idx = 0;
       /* Re-fill depleted RECVs */
       PostRecvWrs(cb->dgram_qp[0], recv_wr);
     }
@@ -342,6 +359,12 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       clover_state = CloverState::kPreparing;
     }
 
+    if (is_update && HERD_VALUE_SIZE > kInlineCutOff) {
+      req_buf = &non_inl_buf[non_inl_idx++];
+    } else {
+      req_buf = inl_buf;
+    }
+
     *(uint128*)req_buf = ConvertPlainKeyToHerdKey(key);
     req_buf->opcode = is_update ? HERD_OP_PUT : HERD_OP_GET;
     req_buf->seq = static_cast<uint8_t>(nb_tx % WINDOW_SIZE);
@@ -353,6 +376,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     /* Forge the RDMA work request */
     sgl.length = is_update ? HERD_PUT_REQ_SIZE : HERD_GET_REQ_SIZE;
     sgl.addr = (uint64_t)(uintptr_t)req_buf;
+    if (HERD_VALUE_SIZE > kInlineCutOff && is_update) {
+      sgl.lkey = non_inl_mr->lkey;
+    }
 
     wr.opcode = IBV_WR_RDMA_WRITE;
     wr.num_sge = 1;
@@ -363,7 +389,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     if ((nb_tx & UNSIG_BATCH_) == UNSIG_BATCH_) {
       hrd_poll_cq(cb->conn_cq[0], 1, wc);
     }
-    wr.send_flags |= IBV_SEND_INLINE;
+    if (HERD_VALUE_SIZE <= kInlineCutOff || !is_update) {
+      wr.send_flags |= IBV_SEND_INLINE;
+    }
 
     wr.wr.rdma.remote_addr = mstr_qp->buf_addr + Offset(wn, clt_gid, ws[wn]) *
                                                      sizeof(struct mica_op);
