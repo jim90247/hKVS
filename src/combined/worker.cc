@@ -323,7 +323,7 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       }
 
       /* Fill in the work request (except the scatter gather elements, they will
-       * be filled in next for loop, after mica_batch_op(). */
+       * be filled in next for loop, after mica_batch_op()). */
       wr[wr_i].wr.ud.ah = ah[clt_i];
       wr[wr_i].wr.ud.remote_qpn = clt_qp[clt_i]->qpn;
       wr[wr_i].wr.ud.remote_qkey = HRD_DEFAULT_QKEY;
@@ -360,8 +360,6 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
 
     mica_batch_op(&kv, wr_i, op_ptr_arr, resp_arr);
 
-    // We may insert mirroring/invalidation operations (Clover compute node)
-    // here.
     unsigned int clover_req_cnt = 0, clover_insert_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
       // We've modified HERD to use 64-bit hash and place the hash result in
@@ -455,13 +453,15 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
     while (!req_queue.try_enqueue_bulk(
         ptok, std::make_move_iterator(clover_req_buf.begin()), clover_req_cnt))
       ;
-    clover_comps = 0;
-    while (FLAGS_clover_blocking && clover_comps < clover_req_cnt) {
-      clover_comps += resp_queue_ptr->try_dequeue_bulk(
-          clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
+    if (FLAGS_clover_blocking) {
+      clover_comps = 0;
+      while (clover_comps < clover_req_cnt) {
+        clover_comps += resp_queue_ptr->try_dequeue_bulk(
+            clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
+      }
+      LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
+          << "Detect failed Clover write, see above error message for details";
     }
-    LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
-        << "Detect failed Clover write, see above error message for details";
     num_clover_updates += clover_req_cnt;
     num_clover_inserts += clover_insert_req_cnt;
 

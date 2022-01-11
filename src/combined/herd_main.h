@@ -75,27 +75,9 @@ static_assert(HRD_Q_DEPTH >= 2 * UNSIG_BATCH); /* Queue capacity check */
 
 static_assert(HERD_VALUE_SIZE <= MICA_MAX_VALUE);
 
-/* NOTE: the max key storage in Clover is likely not large enough to
- * accommodate (NUM_WORKER * HERD_NUM_KEYS) keys.
- *
- * A possible workaround to fit them into Clover that also mimic the read-most
- * workload:
- * Let the first K keys be *popular* keys which has higher access rate.
- * Pre-configure 'K' so that (NUM_WORKER * K) would not exceed the max amount
- * of keys Clover can accommodate, and only offload the first K keys.
- *
- * Future works are required to make this more generic:
- * 1. Determine popular keys based on statistics collected at worker side.
- * 2. Remove non-popular keys from Clover. This would require Clover to
- * support 'delete' operation.
- */
-// The number of popular keys to offload to secondary KVS (Clover) for each HERD
-// worker thread
-constexpr int kKeysToOffloadPerWorker = 10000;
-
 enum HerdResponseCode : unsigned int { kNormal = 0, kOffloaded = 1 };
 
-/* NOTE: although each herd client uses same set of keys (0~HERD_NUM_KEYS-1),
+/* NOTE: although each herd worker uses same set of keys (0~HERD_NUM_KEYS-1),
  * they should be treated as different keys when inserting them into Clover.
  *
  * A possible workaround is to mask out some hash bits and use those fields to

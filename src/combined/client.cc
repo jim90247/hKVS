@@ -54,21 +54,15 @@ DEFINE_double(
  */
 vector<int> GenerateZipfianTrace(size_t trace_len, int worker_id,
                                  int key_range) {
+  LOG(INFO) << "Worker " << worker_id
+            << " starts generating Zipfian trace (alpha " << FLAGS_zipfian_alpha
+            << ")";
   ZipfianGenerator gen(key_range, FLAGS_zipfian_alpha, worker_id);
   vector<int> trace(trace_len);
-  size_t offloaded_keys = 0;
-  RAW_LOG(INFO, "Start generating Zipfian trace for worker %2d (alpha = %.2f)",
-          worker_id, FLAGS_zipfian_alpha);
   for (size_t i = 0; i < trace_len; i++) {
     trace[i] = gen.GetNumber();
-    if (trace[i] < kKeysToOffloadPerWorker) {
-      offloaded_keys++;
-    }
   }
-  RAW_LOG(INFO,
-          "Done generating Zipfian trace for worker %2d (fraction of offloaded "
-          "keys: %.3f)",
-          worker_id, static_cast<double>(offloaded_keys) / trace_len);
+  LOG(INFO) << "Worker " << worker_id << " finish generating Zipfian trace";
   return trace;
 }
 
@@ -129,10 +123,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   // Current Clover state
   CloverState clover_state = CloverState::kPreparing;
   // Free Clover batch ids. Used for limiting maximum concurrency.
-  std::set<unsigned int> avail_batch_ids;
-  for (unsigned int i = 0; i < FLAGS_clover_max_cncr; i++) {
-    avail_batch_ids.insert(i);
-  }
+  std::vector<bool> batch_avail(FLAGS_clover_max_cncr, true);
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -279,7 +270,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     }
 
     wn = hrd_fastrand(&seed) % NUM_WORKERS; /* Choose a worker */
-    int is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
+    bool is_update = hrd_fastrand(&seed) % 100U < update_percentage;
 
     /* Forge the HERD request */
     int key = trace.at(key_i);
@@ -313,15 +304,14 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
         if (clover_req_idx == FLAGS_clover_batch) {
           // wait for previous batches to complete if we reach concurrency limit
-          clover_state =
-              avail_batch_ids.find(clover_bid) == avail_batch_ids.end()
-                  ? CloverState::kWaitForResp
-                  : CloverState::kReadyToSubmit;
+          clover_state = batch_avail.at(clover_bid)
+                             ? CloverState::kReadyToSubmit
+                             : CloverState::kWaitForResp;
         }
 
         // NOTE: use "continue" here will cause blocking at hrd_poll_cq() above
         // workaround: build next HERD request and send it
-        is_update = (hrd_fastrand(&seed) % 100 < update_percentage) ? 1 : 0;
+        is_update = hrd_fastrand(&seed) % 100U < update_percentage;
         key = trace.at(key_i);
         key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
       }
@@ -336,26 +326,26 @@ void HerdMain(herd_thread_params herd_params, int local_id,
         if (resp.id % FLAGS_clover_batch == FLAGS_clover_batch - 1) {
           clover_comp_batch++;
           // batch id is (request id / batch size)
-          avail_batch_ids.insert(clover_resp_buf[j].id / FLAGS_clover_batch);
+          batch_avail.at(clover_resp_buf[j].id / FLAGS_clover_batch) = true;
         }
         if (resp.rc != MITSUME_SUCCESS) {
           clover_fails++;
           lookup_table.erase(resp.key);
         }
       }
-      if (avail_batch_ids.find(clover_bid) != avail_batch_ids.end()) {
+      if (batch_avail.at(clover_bid)) {
         clover_state = CloverState::kReadyToSubmit;
       }
     }
 
     if (clover_state == CloverState::kReadyToSubmit) {
-      DCHECK(avail_batch_ids.find(clover_bid) != avail_batch_ids.end());
+      DCHECK(batch_avail.at(clover_bid));
       while (!req_queue.try_enqueue_bulk(ptok, clover_req_buf.begin(),
                                          FLAGS_clover_batch))
         ;
       clover_req_idx = 0;
-      avail_batch_ids.erase(clover_bid);
-      clover_bid = (clover_bid + 1) % FLAGS_clover_max_cncr;
+      batch_avail.at(clover_bid) = false;
+      HRD_MOD_ADD(clover_bid, FLAGS_clover_max_cncr);
       clover_state = CloverState::kPreparing;
     }
 
@@ -430,6 +420,7 @@ int main(int argc, char* argv[]) {
   LOG(INFO) << "Using " << FLAGS_clover_coros << " Clover worker coroutines";
   LOG(INFO) << "Clover request submit batch size: " << FLAGS_clover_batch
             << ", max concurrent batches: " << FLAGS_clover_max_cncr;
+  LOG(INFO) << "Value size = " << HERD_VALUE_SIZE << " bytes";
 
   CloverComputeNodeWrapper clover_node(FLAGS_clover_threads);
   /* Since primary KVS (combined_worker) initializes connection to Clover before
