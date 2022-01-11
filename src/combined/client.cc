@@ -42,6 +42,9 @@ DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
 
+DEFINE_int64(bench_herd_iter, 20L << 20,
+             "Number of HERD reqs to perform per thread");
+
 /**
  * @brief Generates a key access trace based on Zipfian distribution. Key range:
  * [0, key_range).
@@ -244,6 +247,10 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       rolling_iter = 0;
       clover_comp_batch = 0;
       clover_fails = 0;
+      if (nb_tx >= FLAGS_bench_herd_iter) {
+        LOG(INFO) << "Benchmark ends here";
+        return;
+      }
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
