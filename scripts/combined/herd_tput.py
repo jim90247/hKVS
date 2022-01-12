@@ -29,7 +29,7 @@ def main(args):
 
     worker_stats_median = {}
     for worker_id, stats in worker_stats.items():
-        worker_stats_median[worker_id] = {name: values[-1] for name, values in stats.items()}
+        worker_stats_median[worker_id] = {name: values[-2] for name, values in stats.items()}
     pprint(worker_stats_median)
 
     median_total = defaultdict(lambda: 0)
