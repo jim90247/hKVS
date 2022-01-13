@@ -1,6 +1,8 @@
 #include <random>
 
-class ZipfianGenerator {
+#include "trace_provider.h"
+
+class ZipfianGenerator : public TraceProvider {
  public:
   /**
    * @brief Constructs a new Zipfian Generator with range 0 ~ n - 1.
@@ -16,10 +18,10 @@ class ZipfianGenerator {
 
   /**
    * @brief Gets a random number.
-   * 
+   *
    * @return an integer in interval [0, n)
    */
-  int GetNumber();
+  virtual TraceKey GetNumber() override;
 
  private:
   std::mt19937_64 gen_;

@@ -17,7 +17,7 @@ TwttrTraceReader::TwttrTraceReader(std::string trace_file, size_t max_len)
   }
 }
 
-TwttrHashedKey TwttrTraceReader::GetNumber() {
+TraceKey TwttrTraceReader::GetNumber() {
   auto ret = trace_.at(idx_);
   idx_++;
   if (idx_ == trace_.size()) {

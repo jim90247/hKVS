@@ -19,12 +19,12 @@ ZipfianGenerator::ZipfianGenerator(int n, double alpha, int seed)
 
 ZipfianGenerator::~ZipfianGenerator() { delete[] sum_probs_; }
 
-int ZipfianGenerator::GetNumber() {
+TraceKey ZipfianGenerator::GetNumber() {
   double z = distrib_(gen_);
 
-  int l = 0, r = n_;
+  TraceKey l = 0, r = n_;
   while (r - l > 1) {
-    int m = (l + r) / 2;
+    auto m = (l + r) / 2;
     if (sum_probs_[m] > z) {
       r = m;
     } else {

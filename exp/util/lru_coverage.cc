@@ -25,18 +25,17 @@ DEFINE_double(zipfian_alpha, 0.99, "Zipfian parameter");
 DEFINE_uint64(key_range, 8UL << 20, "Key range");
 DEFINE_int32(seed, 42, "Random seed for trace generation");
 
-std::vector<int> BuildTrace() {
-  std::vector<int> trace(FLAGS_trace_size);
+std::vector<TraceKey> BuildTrace() {
+  std::vector<TraceKey> trace(FLAGS_trace_size);
+  std::unique_ptr<TraceProvider> trace_provider;
   if (FLAGS_twttr_trace.empty()) {
-    ZipfianGenerator gen(FLAGS_key_range, FLAGS_zipfian_alpha, FLAGS_seed);
-    for (size_t i = 0; i < FLAGS_trace_size; i++) {
-      trace[i] = gen.GetNumber();
-    }
+    trace_provider = std::make_unique<ZipfianGenerator>(
+        FLAGS_key_range, FLAGS_zipfian_alpha, FLAGS_seed);
   } else {
-    TwttrTraceReader trace_reader(FLAGS_twttr_trace);
-    for (size_t i = 0; i < FLAGS_trace_size; i++) {
-      trace[i] = trace_reader.GetNumber();
-    }
+    trace_provider = std::make_unique<TwttrTraceReader>(FLAGS_twttr_trace);
+  }
+  for (size_t i = 0; i < FLAGS_trace_size; i++) {
+    trace[i] = trace_provider->GetNumber();
   }
   return trace;
 }
@@ -48,17 +47,16 @@ int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
-  LruRecordsWithMinCount<int> cache(FLAGS_lru_size, FLAGS_window_size,
-                                    FLAGS_window_min_count);
-  // LruRecords<int> cache(FLAGS_lru_size);
+  LruRecordsWithMinCount<TraceKey> cache(FLAGS_lru_size, FLAGS_window_size,
+                                         FLAGS_window_min_count);
+  // LruRecords<TraceKey> cache(FLAGS_lru_size);
 
-  std::vector<int> trace = BuildTrace();
+  auto trace = BuildTrace();
 
   LOG(INFO) << "Starting benchmark";
   auto start = clock::now();
   size_t hit = 0, evict = 0;
-  for (size_t i = 1; i <= FLAGS_trace_size; i++) {
-    int key = trace.at(i - 1);
+  for (auto key : trace) {
     if (cache.Contain(key)) {
       hit++;
     }
