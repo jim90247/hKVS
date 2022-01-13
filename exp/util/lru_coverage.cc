@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
   } else {
     csv_writer << std::make_tuple(FLAGS_lru_size, FLAGS_trace_size,
                                   FLAGS_twttr_trace, FLAGS_window_size,
-                                  FLAGS_window_min_count, hit_rate, evict);
+                                  FLAGS_window_min_count, hit_rate, evict, ops);
   }
   LOG(INFO) << "Record=" << ss.str();
   return 0;
