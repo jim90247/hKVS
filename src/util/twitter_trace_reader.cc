@@ -10,7 +10,17 @@ TwttrTraceReader::TwttrTraceReader(std::string trace_file, size_t max_len)
 
   csv::CSVReader reader(trace_file.c_str(), csv::CSVFormat().no_header());
   for (auto& row : reader) {
-    trace_.push_back(static_cast<TwttrHashedKey>(hasher(row[1].get_sv())));
+    /**
+     * Field in row:
+     * 1. timestamp
+     * 2. anonymized key
+     * 3. key size
+     * 4. value size
+     * 5. client id
+     * 6. operation
+     * 7. TTL
+     */
+    trace_.push_back(static_cast<TraceKey>(hasher(row[1].get_sv())));
     if (++idx >= max_len) {
       break;
     }
