@@ -4,12 +4,14 @@
 #include "csv.hpp"
 #include "trace_provider.h"
 
-using TraceKey = int;
+struct TwttrTraceFilterOption {
+  std::vector<std::string> ops;
+};
 
 /// A reader for https://github.com/twitter/cache-trace.
 class TwttrTraceReader : public TraceProvider {
  public:
-  TwttrTraceReader(std::string trace_file,
+  TwttrTraceReader(std::string trace_file, TwttrTraceFilterOption option,
                    size_t max_len = std::numeric_limits<size_t>::max());
   TwttrTraceReader(const TwttrTraceReader&) = delete;
   /**

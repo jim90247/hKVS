@@ -32,8 +32,10 @@ std::vector<TraceKey> BuildTrace() {
     trace_provider = std::make_unique<ZipfianGenerator>(
         FLAGS_key_range, FLAGS_zipfian_alpha, FLAGS_seed);
   } else {
-    trace_provider =
-        std::make_unique<TwttrTraceReader>(FLAGS_twttr_trace, FLAGS_trace_size);
+    TwttrTraceFilterOption filter_opt;
+    filter_opt.ops = {"get", "gets"};
+    trace_provider = std::make_unique<TwttrTraceReader>(
+        FLAGS_twttr_trace, filter_opt, FLAGS_trace_size);
   }
   for (size_t i = 0; i < FLAGS_trace_size; i++) {
     trace[i] = trace_provider->GetNumber();

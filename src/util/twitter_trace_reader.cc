@@ -1,9 +1,12 @@
 #include "twitter_trace_reader.h"
 
+#include <algorithm>
 #include <functional>
 #include <string_view>
 
-TwttrTraceReader::TwttrTraceReader(std::string trace_file, size_t max_len)
+TwttrTraceReader::TwttrTraceReader(std::string trace_file,
+                                   TwttrTraceFilterOption option,
+                                   size_t max_len)
     : idx_(0) {
   size_t idx = 0;
   std::hash<std::string_view> hasher;
@@ -20,6 +23,10 @@ TwttrTraceReader::TwttrTraceReader(std::string trace_file, size_t max_len)
      * 6. operation
      * 7. TTL
      */
+    if (!option.ops.empty() && std::find(option.ops.begin(), option.ops.end(),
+                                         row[5].get()) == option.ops.end()) {
+      continue;
+    }
     trace_.push_back(static_cast<TraceKey>(hasher(row[1].get_sv())));
     if (++idx >= max_len) {
       break;
