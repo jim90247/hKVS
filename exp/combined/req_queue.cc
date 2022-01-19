@@ -3,6 +3,7 @@
 #include <moodycamel/concurrentqueue.h>
 
 #include <chrono>
+#include <forward_list>
 #include <thread>
 #include <vector>
 
@@ -11,9 +12,10 @@
 DEFINE_int32(producer, 1, "number of producer threads");
 DEFINE_int32(consumer, 1, "number of consumer threads");
 DEFINE_int32(batch, 1, "batch size");
+DEFINE_int32(batch_consumer, 1, "batch size of consumer threads");
 DEFINE_bool(reply, true, "need reply");
 DEFINE_int32(concurrent_batch, 1, "max concurrent batches");
-DEFINE_int32(spin_cycle, 2000, "spin cycle");
+DEFINE_int32(spin_cycle, 0, "spin cycle");
 
 void bar() {
   thread_local static volatile int foo = 0;
@@ -74,10 +76,14 @@ void ProducerMain(SharedRequestQueue& req_queue,
 
 void ConsumerMain(SharedRequestQueue& req_queue,
                   const std::vector<SharedResponseQueuePtr>& resp_queues) {
-  CloverRequest req;
+  std::forward_list<CloverRequest> reqs(FLAGS_batch_consumer);
   moodycamel::ConsumerToken ctok(req_queue);
   while (true) {
-    if (req_queue.try_dequeue(ctok, req)) {
+    reqs.resize(FLAGS_batch_consumer);
+    int new_reqs =
+        req_queue.try_dequeue_bulk(ctok, reqs.begin(), FLAGS_batch_consumer);
+    reqs.resize(new_reqs);
+    for (auto& req : reqs) {
       CloverResponse resp{req.key, req.id, req.op, MITSUME_SUCCESS};
       bar();
       if (req.reply_opt == CloverReplyOption::kAlways) {
