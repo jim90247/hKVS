@@ -315,15 +315,17 @@ int mitsume_tool_local_hashtable_operations(
 }
 
 /**
- * mitsume_tool_query: query internal local CACHE (hash-table) to find the LH
- * and offset of the input key
- * @key: input key
- * @input: memory space which is going to keep the allocated space information
- * @option_flag: NULL | FORCE_REMOTE, force remote will force the system to
- * query remote controller to get the latest address
- * @debug_flag: 0 | 1, force query to contain debug flag, controller side will
- * show the latest offset in output return: return a number to show how did the
- * memory space be allocated
+ * @brief Queries internal local CACHE (hash table) to find the LH and offset of
+ * the key.
+ *
+ * @param[in,out] thread_metadata thread metadata
+ * @param[in] key input key
+ * @param[out] input memory space to keep the allocated space information
+ * @param[in] option_flag 0 or FORCE_REMOTE, force remote will force the system
+ * to query remote controller to get the latest address
+ * @param[in] debug_flag: 0 or 1, force query to contain debug flag, controller side
+ * will show the latest offset in output
+ * @return MITSUME_SUCCESS on success, MITSUME_ERROR when failed
  */
 int mitsume_tool_query(struct mitsume_consumer_metadata *thread_metadata,
                        mitsume_key key,
@@ -483,15 +485,17 @@ abort_query:
 }
 
 /**
- * mitsume_tool_setup_meshptr_empty_header_by_newspace: setup a empty mesh
- * pointer based on the new space information The data inside pointer will be
- * entry version only This funcion is used in write/open request
- * @meshptr: pointer to a replication array
- * @newspace: allocated space metadata
- * return: return error or success
+ * Setup a empty mesh pointer based on the new space information.
+ *
+ * The data inside pointer will be entry version only. Used in write & open
+ * request.
+ * @param[out] meshptr pointer to a replication array
+ * @param[in] newspace allocated space metadata
+ * @return MITSUME_SUCCESS
  */
 inline int mitsume_tool_setup_meshptr_empty_header_by_newspace(
-    struct mitsume_ptr **meshptr, struct mitsume_tool_communication *newspace) {
+    struct mitsume_ptr **meshptr,
+    const struct mitsume_tool_communication *newspace) {
   int per_replication;
   int per_entry;
   int replication_factor = newspace->replication_factor;
@@ -1834,8 +1838,11 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
 
   ptr_attr *remote_mr[MITSUME_MAX_REPLICATION] = {0};
 
+  // C&S result (the old value in C&S target address)
   struct mitsume_ptr read_value;
+  // Expected value in C&S
   struct mitsume_ptr guess_value;
+  // New value to set in C&S
   struct mitsume_ptr set_value;
 
   uint64_t cs_id;
@@ -1889,7 +1896,7 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
   // query again after lock the epoch
   query_ret = mitsume_tool_query(thread_metadata, key, &query, 0, 0);
   if (query_ret) {
-    MITSUME_INFO("query fail with key %lu \n", (long unsigned int)key);
+    MITSUME_INFO("query fail (key=%lu)\n", key);
     // MITSUME_STAT_ADD(MITSUME_STAT_CLT_WRITE_FAIL, 1);
     local_errno = __LINE__;
     goto abort_write;
@@ -1916,14 +1923,19 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
   for (per_replication = 0; per_replication < query.replication_factor;
        per_replication++) {
     tar_sge = sge_list[per_replication];
+
+    // pointer of each replication
     tar_sge[0].addr = (uintptr_t)meshptr_list[per_replication];
     tar_sge[0].length = sizeof(struct mitsume_ptr) * (query.replication_factor);
     tar_sge[0].lkey = local_inf->meshptr_mr[coro_id].lkey;
 
-    tar_sge[1].addr = (uint64_t)local_inf->user_input_space[coro_id];
+    // actual data
+    tar_sge[1].addr = reinterpret_cast<uint64_t>(write_addr);
     tar_sge[1].length = size;
     tar_sge[1].lkey = local_inf->user_input_mr[coro_id]->lkey;
 
+    // dummy data to fill up the slot (value size could be smaller than the slot
+    // size returned by slab allocator)
     tar_sge[2].addr = (uintptr_t)empty_base;
     tar_sge[2].length = mitsume_con_alloc_pointer_to_size(
                             newspace.replication_ptr[per_replication].pointer,
@@ -1932,11 +1944,9 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
     tar_sge[2].lkey = local_inf->empty_mr->lkey;
 
     // setup crc
-
     crc_base[per_replication] = mitsume_tool_get_crc(
-        meshptr_list[per_replication], query.replication_factor,
-        (void *)local_inf->user_input_space[coro_id], size, empty_base,
-        tar_sge[2].length);
+        meshptr_list[per_replication], query.replication_factor, write_addr,
+        size, empty_base, tar_sge[2].length);
     if (tar_sge[2].length > 0) {
       use_patch_flag = MITSUME_TOOL_WITH_PATCH;
 #ifdef MITSUME_DISABLE_CRC
@@ -2045,18 +2055,16 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
     }
 #endif
   } else {
-    // issue shortcut read to get the latest shortcut pointer
-    // this shortcut can be used by the compare and swap
-    // since it's still in writing RTT time, the cost in terms of latency is not
-    // significant
     set_value.pointer = mitsume_struct_set_pointer(
         MITSUME_GET_PTR_LH(newspace.ptr.pointer),
         MITSUME_GET_PTR_ENTRY_VERSION(newspace.ptr.pointer),
         MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 0);
 
     // poll step1-1 before step 1-3
-    if (coro_id)
+    // TODO: is it required to wait for data write completes before C&S?
+    if (coro_id) {
       yield_to_another_coro(thread_metadata->local_inf, coro_id, yield);
+    }
     for (per_replication = 0; per_replication < query.replication_factor;
          per_replication++) {
       assert(wr_id[per_replication]);
@@ -2108,8 +2116,9 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
     userspace_one_cs(ib_ctx, cs_id, local_inf->input_mr[coro_id], cs_mr,
                      guess_value.pointer, set_value.pointer);
 
-    if (coro_id)
+    if (coro_id) {
       yield_to_another_coro(thread_metadata->local_inf, coro_id, yield);
+    }
 
     userspace_one_poll(ib_ctx, cs_id, cs_mr);
     mitsume_local_thread_put_wr_id(local_inf, cs_id);
@@ -2138,10 +2147,10 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
     // Both guess and set value needed to be updated
     guess_value.pointer = mitsume_struct_set_pointer(
         0, 0, MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 0);
-    if (query.replication_factor != 1)
+    if (query.replication_factor != 1) {
       set_value.pointer = mitsume_struct_set_pointer(
           0, 0, MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 1);
-    else {
+    } else {
       set_value.pointer = mitsume_struct_set_pointer(
           MITSUME_GET_PTR_LH(newspace.ptr.pointer),
           MITSUME_GET_PTR_ENTRY_VERSION(newspace.ptr.pointer),
@@ -2162,8 +2171,9 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
                  ->all_lh_attr[MITSUME_GET_PTR_LH(query.ptr.pointer)];
     userspace_one_cs(ib_ctx, cs_id, local_inf->input_mr[coro_id], cs_mr,
                      guess_value.pointer, set_value.pointer);
-    if (coro_id)
+    if (coro_id) {
       yield_to_another_coro(thread_metadata->local_inf, coro_id, yield);
+    }
     userspace_one_poll(ib_ctx, cs_id, cs_mr);
     mitsume_local_thread_put_wr_id(local_inf, cs_id);
     memcpy(&read_value, local_inf->input_space[coro_id],
@@ -2180,9 +2190,9 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
     // MITSUME_TOOL_PRINT_POINTER_NULL(&guess_value);
     // MITSUME_TOOL_PRINT_POINTER_NULL(&set_value);
 
-    chasing_count++;
-    if (chasing_count > 10000)
+    if (++chasing_count > 10000) {
       chasing_debug = 1;
+    }
     if (chasing_debug) {
       MITSUME_INFO("chasing %d\n", chasing_count);
       MITSUME_TOOL_PRINT_POINTER_NULL(&query.ptr);
@@ -2272,6 +2282,7 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
   // query.replication_factor, key); #endif
 
   if (optional_flag & MITSUME_TOOL_FLAG_GC) {
+    // MITSUME_TOOL_KVSTORE_WRITE or MITSUME_TOOL_MESSAGE_READ
     // mitsume_tool_gc_submit_request(thread_metadata, key, query.ptr.pointer,
     // newspace.ptr.pointer, query.shortcut_ptr.pointer);
     mitsume_tool_gc_submit_request(thread_metadata, key, &query, &newspace,
