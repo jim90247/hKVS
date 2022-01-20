@@ -873,50 +873,64 @@ int userspace_one_read_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
   return 0;
 }
 
+/**
+ * @brief Polls for the work completion of a specific work request. Blocks until
+ * the work completion is found.
+ *
+ * @param ib_ctx infiniband context
+ * @param wr_id the work request id
+ * @param remote_mr remote machine's memory region metadata
+ * @return MITSUME_SUCCESS on success, MITSUME_TOO_MANY_POLLS when the work
+ * completion does not appear after many ibv_poll_cq attempts
+ */
 int userspace_one_poll(struct ib_inf *ib_ctx, uint64_t wr_id,
                        struct ib_mr_attr *remote_mr) {
-  struct ibv_wc wc[RSEC_CQ_DEPTH];
-  int comps = 0;
-  int num_comps = 1;
+  constexpr int kCqPollBatch = 32;
+#ifdef NDEBUG
+  constexpr int kCqCheckCount = 1;
+#else
+  // Ideally, we should check all completions
+  constexpr int kCqCheckCount = kCqPollBatch;
+#endif
+  static_assert(kCqPollBatch <= RSEC_CQ_DEPTH);
+  static_assert(kCqCheckCount <= kCqPollBatch);
+
+  struct ibv_wc wc[kCqPollBatch];
   int count = 0;
-  while (comps < num_comps) {
-    if (userspace_check_done_wr_table(wr_id))
-      break;
-    // int new_comps = ibv_poll_cq(ib_ctx->conn_cq[remote_mr->machine_id],
-    // num_comps - comps, &wc[comps]);
-    int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
-    int new_comps =
-        ibv_poll_cq(ib_ctx->conn_cq[qp_idx], num_comps - comps, &wc[comps]);
-    count++;
-    if (new_comps != 0) {
-      // MITSUME_PRINT("poll %llu\n", (unsigned long long int) wc[comps].wr_id);
-      // Ideally, we should check from comps -> new_comps - 1
-      if (wc[comps].status != 0) {
-        fprintf(stderr, "Bad wc status %d: %s (wr_id: %llu, opcode: %d)\n",
-                wc[comps].status, ibv_wc_status_str(wc[comps].status),
-                (unsigned long long int)wc[comps].wr_id, wc[comps].opcode);
-        exit(0);
-        return 1;
-        // exit(0);
+  int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
+  bool done = false;
+
+  while (!done) {
+    if (userspace_check_done_wr_table(wr_id)) break;
+    int comps = ibv_poll_cq(ib_ctx->conn_cq[qp_idx], kCqPollBatch, wc);
+    if (comps < 0) {
+      fputs("ibv_poll_cq failed\n", stderr);
+      exit(EXIT_FAILURE);
+    }
+
+    int chk = std::min(comps, kCqCheckCount);
+    for (int i = 0; i < chk; i++) {
+      if (wc[i].status != IBV_WC_SUCCESS) {
+        fprintf(stderr, "Bad wc status %d: %s (wr_id=%lu, opcode=%d)\n",
+                wc[i].status, ibv_wc_status_str(wc[i].status), wc[i].wr_id,
+                wc[i].opcode);
+        exit(EXIT_FAILURE);
       }
-      // comps += new_comps;
-      // MITSUME_PRINT("check %llu\n", (unsigned long long int)wc[comps].wr_id);
-      userspace_done_wr_table_value(wc[comps].wr_id);
     }
-    if (count > 10000 && count % 100000 == 0) {
-      // printf("%d %llu\n", count, (unsigned long long int)wr_id);
-      MITSUME_PRINT_ERROR("polling too many times %d %llu\n", count,
-                          (unsigned long long int)wr_id);
-      std::cout << boost::stacktrace::stacktrace() << std::endl;
+
+    for (int i = 0; i < comps; i++) {
+      if (wc[i].wr_id == wr_id) {
+        done = true;
+      }
+      userspace_done_wr_table_value(wc[i].wr_id);
+    }
+
+    if (++count == 100000) {
+      MITSUME_PRINT_ERROR("polling too many times %d %lu\n", count, wr_id);
+      std::cerr << boost::stacktrace::stacktrace() << std::endl;
       return MITSUME_TOO_MANY_POLLS;
-      // MITSUME_IDLE_HERE;
     }
-    if (userspace_check_done_wr_table(wr_id))
-      break;
   }
-  // uint64_t poll_id;
-  // poll_id = wc[0].wr_id;
-  // MITSUME_PRINT("poll-%lld\n", (long long int)poll_id);
   return MITSUME_SUCCESS;
 }
 
