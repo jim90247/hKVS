@@ -1949,16 +1949,14 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
         size, empty_base, tar_sge[2].length);
     if (tar_sge[2].length > 0) {
       use_patch_flag = MITSUME_TOOL_WITH_PATCH;
-#ifdef MITSUME_DISABLE_CRC
-#else
+#ifndef MITSUME_DISABLE_CRC
       tar_sge[3].addr = (uintptr_t)&crc_base[per_replication];
       tar_sge[3].length = MITSUME_CRC_SIZE;
       tar_sge[3].lkey = local_inf->crc_mr[coro_id].lkey;
 #endif
     } else {
       use_patch_flag = MITSUME_TOOL_WITHOUT_PATCH;
-#ifdef MITSUME_DISABLE_CRC
-#else
+#ifndef MITSUME_DISABLE_CRC
       tar_sge[2].addr = (uintptr_t)&crc_base[per_replication];
       tar_sge[2].length = MITSUME_CRC_SIZE;
       tar_sge[2].lkey = local_inf->crc_mr[coro_id].lkey;
@@ -1980,24 +1978,18 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
 
   for (per_replication = 0; per_replication < query.replication_factor;
        per_replication++) {
-    tar_sge = sge_list[per_replication];
+    int sge_len = 0;
     if (use_patch_flag == MITSUME_TOOL_WITH_PATCH) {
-#ifdef MITSUME_DISABLE_CRC
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 3);
-#else
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 4);
-#endif
+      sge_len = 3;
     } else {
-#ifdef MITSUME_DISABLE_CRC
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 2);
-#else
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 3);
-#endif
+      sge_len = 2;
     }
+#ifndef MITSUME_DISABLE_CRC
+    sge_len += 1;
+#endif
+    userspace_one_write_sge(ib_ctx, wr_id[per_replication],
+                            remote_mr[per_replication], 0,
+                            sge_list[per_replication], sge_len);
   }
   guess_value.pointer = mitsume_struct_set_pointer(
       0, 0, MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 0);
@@ -2266,7 +2258,7 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
   // Update last query place
   // Since this is a write request, it should use newspace to update local
   // hashtable
-
+  // TODO: can we update the hash table earlier?
   mitsume_tool_local_hashtable_operations(
       thread_metadata, key, &newspace, NULL,
       MITSUME_MODIFY); // it's always the latest or new
