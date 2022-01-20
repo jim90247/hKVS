@@ -1,4 +1,5 @@
 #include "mitsume_benchmark.h"
+#include <unistd.h>
 
 #define MITSUME_TARGET_KEY 10
 
@@ -105,6 +106,12 @@ void mitsume_benchmark_master_func(
 }
 
 void *mitsume_benchmark_coroutine(void *input_metadata) {
+  static std::mutex display_mutex;
+  {
+    std::lock_guard<std::mutex> lock(display_mutex);
+    cout << "Starting benchmark thread " << gettid() << endl;
+  }
+
   using std::placeholders::_1;
   struct mitsume_consumer_metadata *thread_metadata =
       (struct mitsume_consumer_metadata *)input_metadata;
