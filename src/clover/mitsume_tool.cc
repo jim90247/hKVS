@@ -2053,7 +2053,7 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
         MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 0);
 
     // poll step1-1 before step 1-3
-    // TODO: is it required to wait for data write completes before C&S?
+    // We must ensure that the data is already available once the C&S succeed.
     if (coro_id) {
       yield_to_another_coro(thread_metadata->local_inf, coro_id, yield);
     }
