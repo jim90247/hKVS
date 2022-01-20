@@ -11,6 +11,20 @@ std::unordered_map<mitsume_key, struct mitsume_hash_struct *>
 // MITSUME_TOOL_SHARE_LRU_CACHE[1<<MITSUME_LRU_BUCKET_BIT];
 queue<mitsume_key> MITSUME_TOOL_SHARE_FIFO_QUEUE[1 << MITSUME_LRU_BUCKET_BIT];
 mutex MITSUME_TOOL_SHARE_FIFO_QUEUE_LOCK[1 << MITSUME_LRU_BUCKET_BIT];
+
+/// Determines sge length based on CRC enablement setting and with_patch flag.
+constexpr int GetSgeLength(int with_patch) {
+#ifdef MITSUME_DISABLE_CRC
+  int len = 2;
+#else
+  int len = 3;
+#endif
+  if (with_patch == MITSUME_TOOL_WITH_PATCH) {
+    len++;
+  }
+  return len;
+}
+
 /**
  * mitsume_tool_begin: calling this function will prevent concurrency between
  * epoch forwarding and operations
@@ -829,13 +843,8 @@ int result_list[MITSUME_MAX_PARALLEL_REQUEST]={0};
       remote_mr =
           &local_ctx_clt->all_lh_attr[MITSUME_GET_PTR_LH(query->ptr.pointer)];
 
-#ifdef MITSUME_DISABLE_CRC
       userspace_one_read_sge(ib_ctx, memory_wr_id, remote_mr, 0, internal_sge,
-                             2);
-#else
-      userspace_one_read_sge(ib_ctx, memory_wr_id, remote_mr, 0, internal_sge,
-                             3);
-#endif
+                             GetSgeLength(0));
     } else if (mode == MITSUME_WRITE) {
       memory_wr_id = mitsume_local_thread_get_wr_id(local_inf);
       remote_mr =
@@ -1613,24 +1622,9 @@ int target_allocator_id;
 
   for (per_replication = 0; per_replication < replication_factor;
        per_replication++) {
-    tar_sge = sge_list[per_replication];
-    if (use_patch_flag == MITSUME_TOOL_WITH_PATCH) {
-#ifdef MITSUME_DISABLE_CRC
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 3);
-#else
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 4);
-#endif
-    } else {
-#ifdef MITSUME_DISABLE_CRC
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 2);
-#else
-      userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                              remote_mr[per_replication], 0, tar_sge, 3);
-#endif
-    }
+    userspace_one_write_sge(
+        ib_ctx, wr_id[per_replication], remote_mr[per_replication], 0,
+        sge_list[per_replication], GetSgeLength(use_patch_flag));
   }
   for (per_replication = 0; per_replication < replication_factor;
        per_replication++) {
@@ -1978,18 +1972,9 @@ int mitsume_tool_write(struct mitsume_consumer_metadata *thread_metadata,
 
   for (per_replication = 0; per_replication < query.replication_factor;
        per_replication++) {
-    int sge_len = 0;
-    if (use_patch_flag == MITSUME_TOOL_WITH_PATCH) {
-      sge_len = 3;
-    } else {
-      sge_len = 2;
-    }
-#ifndef MITSUME_DISABLE_CRC
-    sge_len += 1;
-#endif
-    userspace_one_write_sge(ib_ctx, wr_id[per_replication],
-                            remote_mr[per_replication], 0,
-                            sge_list[per_replication], sge_len);
+    userspace_one_write_sge(
+        ib_ctx, wr_id[per_replication], remote_mr[per_replication], 0,
+        sge_list[per_replication], GetSgeLength(use_patch_flag));
   }
   guess_value.pointer = mitsume_struct_set_pointer(
       0, 0, MITSUME_GET_PTR_ENTRY_VERSION(query.ptr.pointer), 0, 0);
