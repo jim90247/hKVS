@@ -40,6 +40,8 @@ void mitsume_benchmark_slave_func(coro_yield_t &yield,
                                       id_tuple) {
   struct mitsume_consumer_metadata *thread_metadata = get<0>(id_tuple);
   int coro_id = get<1>(id_tuple);
+  const int uniq_coro_id =
+      thread_metadata->thread_id * (MITSUME_YCSB_COROUTINE - 1) + coro_id - 1;
   int *op_key = get<2>(id_tuple);
   int test_size = MITSUME_BENCHMARK_SIZE;
   mitsume_key *target_key = get<3>(id_tuple);
@@ -61,6 +63,14 @@ void mitsume_benchmark_slave_func(coro_yield_t &yield,
     i = *next_index;
     key = (uint64_t)target_key[i];
     *next_index = *next_index + 1;
+    if (*next_index == MITSUME_YCSB_SIZE) {
+      *next_index = 0;
+    }
+    if (key % (MITSUME_BENCHMARK_THREAD_NUM * (MITSUME_YCSB_COROUTINE - 1)) !=
+        uniq_coro_id) {
+      // Each coroutine handles a disjoint set of keys
+      continue;
+    }
     // MITSUME_PRINT("process %d\n", coro_id);
     if (MITSUME_YCSB_VERIFY_LEVEL)
       memset(write, 0x31 + (key % 30), MITSUME_BENCHMARK_SIZE);
@@ -80,8 +90,6 @@ void mitsume_benchmark_slave_func(coro_yield_t &yield,
     // MITSUME_PRINT("after process %d\n", coro_id);
     if (ret != MITSUME_SUCCESS)
       MITSUME_INFO("error %lld %d\n", (unsigned long long int)key, ret);
-    if (*next_index == MITSUME_YCSB_SIZE)
-      *next_index = 0;
     *local_op = *local_op + 1;
   }
 }
