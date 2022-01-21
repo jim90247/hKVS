@@ -4,6 +4,8 @@
 
 #include "op_counter.h"
 
+// TODO: can we change this to an array if we can restrict max value of work
+// request id to a reasonably small number?
 std::unordered_map<uint64_t, unsigned int> WR_ID_WAITING_TABLE;
 
 void *p15_malloc(size_t length) {
@@ -677,10 +679,10 @@ int userspace_one_send(struct ibv_qp *qp, struct ibv_mr *local_mr,
 }
 
 inline int wr_id_to_qp_index(uint64_t wr_id, int remote_machine_id) {
-  int ret = (remote_machine_id * P15_PARALLEL_RC_QPS) + (wr_id & 0x7);
-  MITSUME_STAT_ARRAY_ADD(wr_id & 0x7, 1);
+  constexpr int mask = P15_PARALLEL_RC_QPS - 1;
+  int ret = (remote_machine_id * P15_PARALLEL_RC_QPS) + (wr_id & mask);
+  MITSUME_STAT_ARRAY_ADD(wr_id & mask, 1);
   return ret;
-  // return (remote_machine_id*P15_PARALLEL_RC_QPS)+(wr_id&0x7);
 }
 
 int userspace_one_read(struct ib_inf *ib_ctx, uint64_t wr_id,
@@ -703,8 +705,7 @@ int userspace_one_read(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr.rdma.rkey = remote_mr->rkey;
   // MITSUME_PRINT("%llu:%llx:%llx\n", (unsigned long long int)wr.wr_id,
   // (unsigned long long int) test_sge.addr, (unsigned long long int)
-  // test_sge.lkey); ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id],
-  // &wr, &bad_send_wr);
+  // test_sge.lkey);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
   if (ret)
@@ -735,8 +736,6 @@ int userspace_one_cs(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr.atomic.rkey = remote_mr->rkey;
   wr.wr.atomic.compare_add = guess_value;
   wr.wr.atomic.swap = set_value;
-  // ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id], &wr,
-  // &bad_send_wr);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
   if (ret)
@@ -764,8 +763,6 @@ int userspace_one_write(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr_id = wr_id;
   wr.wr.rdma.remote_addr = remote_mr->addr + offset;
   wr.wr.rdma.rkey = remote_mr->rkey;
-  // ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id], &wr,
-  // &bad_send_wr);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
 
@@ -794,8 +791,6 @@ int userspace_one_write_inline(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr_id = wr_id;
   wr.wr.rdma.remote_addr = remote_mr->addr + offset;
   wr.wr.rdma.rkey = remote_mr->rkey;
-  // ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id], &wr,
-  // &bad_send_wr);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
 
@@ -820,8 +815,6 @@ int userspace_one_write_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr_id = wr_id;
   wr.wr.rdma.remote_addr = remote_mr->addr + offset;
   wr.wr.rdma.rkey = remote_mr->rkey;
-  // ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id], &wr,
-  // &bad_send_wr);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
   if (ret)
@@ -855,8 +848,6 @@ int userspace_one_read_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
   // for(int i=0;i<input_sge_length;i++)
   //    MITSUME_PRINT("%d:%llx:%llx\n", i, (unsigned long long int)
   //    input_sge[i].addr, (unsigned long long int) input_sge[i].lkey);
-  // ret = ibv_post_send(ib_ctx->conn_qp[remote_mr->machine_id], &wr,
-  // &bad_send_wr);
   int qp_idx = wr_id_to_qp_index(wr_id, remote_mr->machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
   if (ret)
@@ -926,7 +917,8 @@ int userspace_one_poll(struct ib_inf *ib_ctx, uint64_t wr_id,
     }
 
     if (++count == 100000) {
-      MITSUME_PRINT_ERROR("polling too many times %d %lu\n", count, wr_id);
+      MITSUME_PRINT_ERROR("polling too many times %d %lu (qp_idx=%d)\n", count,
+                          wr_id, qp_idx);
       std::cerr << boost::stacktrace::stacktrace() << std::endl;
       return MITSUME_TOO_MANY_POLLS;
     }
@@ -996,8 +988,6 @@ int mitsume_send_full_message(struct ib_inf *ib_ctx,
   // MITSUME_TOOL_PRINT_MSG_HEADER((struct mitsume_msg *)send_mr->addr);
 
   // send out message
-  // userspace_one_send(ib_ctx->conn_qp[target_machine], send_mr, send_size,
-  // wr_id);
   int qp_idx = wr_id_to_qp_index(wr_id, target_machine);
   userspace_one_send(ib_ctx->conn_qp[qp_idx], send_mr, send_size, wr_id);
   userspace_one_poll(ib_ctx, wr_id, &tmp_ptr_attr);
@@ -1033,8 +1023,6 @@ int mitsume_send_full_message_async(
   // MITSUME_TOOL_PRINT_MSG_HEADER((struct mitsume_msg *)send_mr->addr);
 
   // send out message
-  // userspace_one_send(ib_ctx->conn_qp[target_machine], send_mr, send_size,
-  // wr_id);
   int qp_idx = wr_id_to_qp_index(wr_id, target_machine);
   userspace_one_send(ib_ctx->conn_qp[qp_idx], send_mr, send_size, wr_id);
 
@@ -1079,9 +1067,7 @@ int mitsume_reply_full_message(struct ib_inf *ib_ctx, uint64_t wr_id,
   wr.wr.rdma.rkey = recv_header_ptr->reply_attr.rkey;
   // MITSUME_PRINT("send back to %d %llx %llx\n",
   // recv_header_ptr->reply_attr.machine_id, (unsigned long long
-  // int)wr.wr.rdma.remote_addr, (unsigned long long int)wr.wr.rdma.rkey); ret =
-  // ibv_post_send(ib_ctx->conn_qp[recv_header_ptr->reply_attr.machine_id], &wr,
-  // &bad_send_wr);
+  // int)wr.wr.rdma.remote_addr, (unsigned long long int)wr.wr.rdma.rkey);
   int qp_idx = wr_id_to_qp_index(wr_id, recv_header_ptr->reply_attr.machine_id);
   ret = ibv_post_send(ib_ctx->conn_qp[qp_idx], &wr, &bad_send_wr);
   CPE(ret, "ibv_post_send-write error", ret);

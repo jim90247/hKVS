@@ -135,11 +135,10 @@ void yield_to_another_coro(struct thread_local_inf *local_inf, int coro_id,
   // MITSUME_PRINT("gain %d\n", coro_id);
 }
 
-unsigned int accumulate_wr_id_base = 0;
-
 struct thread_local_inf *mitsume_local_thread_setup(struct ib_inf *inf,
                                                     int local_thread_id) {
-  uint64_t wr_id, wr_id_base;
+  // accumulated wr_id base offset
+  static unsigned int accumulate_wr_id_base = 0;
   int per_coroutine;
   struct thread_local_inf *ret_local_inf = new struct thread_local_inf;
   struct ibv_mr *meshptr_mr;
@@ -147,23 +146,22 @@ struct thread_local_inf *mitsume_local_thread_setup(struct ib_inf *inf,
   struct ibv_mr *chase_empty_mr;
   struct ibv_mr *chasing_shortcut_mr;
   struct ibv_mr *write_checking_mr;
-  int i = 0;
-  UNUSED(wr_id_base);
-  UNUSED(i);
 
   assert(ret_local_inf != 0);
   assert(P15_MAX_BUFF <= P15_THREAD_SEND_BUF_NUM);
   ret_local_inf->thread_id = local_thread_id;
 
-  wr_id_base = (accumulate_wr_id_base)*MITSUME_CLT_MAX_WRID_BATCH + 1000;
-  accumulate_wr_id_base++;
-
-  // for(wr_id=wr_id_base;wr_id<wr_id_base+MITSUME_CLT_MAX_WRID_BATCH;wr_id++)
-  while (i < MITSUME_CLT_MAX_WRID_BATCH) {
-    wr_id = 1024 * (i + 1) + accumulate_wr_id_base + kMitsumeWorkRequestOffset;
-    i++;
-    userspace_init_wr_table_value(wr_id);
-    ret_local_inf->queue_wr_id.push(wr_id);
+  {
+    int wr_id_base = accumulate_wr_id_base++;
+    MITSUME_PRINT("wr_id_base=%d\n", wr_id_base);
+    // each thread owns independent set of keys
+    for (int i = 0; i < MITSUME_CLT_MAX_WRID_BATCH; i++) {
+      uint64_t wr_id = 1024 * (i + 1) + wr_id_base + kMitsumeWorkRequestOffset;
+      // wr_id should be less than 1000000 (see assertions in ibsetup.cc)
+      assert(wr_id < 1000000);
+      userspace_init_wr_table_value(wr_id);
+      ret_local_inf->queue_wr_id.push(wr_id);
+    }
   }
 
   meshptr_mr =

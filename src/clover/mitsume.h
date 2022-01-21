@@ -27,6 +27,8 @@
 #include <queue>
 using namespace std;
 
+constexpr bool IsPowerOfTwo(int x) { return x > 0 && (x & (x - 1)) == 0; }
+
 //#define P15_MAXSIZE_PERBLOCK 128
 //#define P15_NUM_METADATA_PERALLOC 1024
 //#define P15_NUM_DATA_PERALLOC 1024
@@ -47,7 +49,9 @@ using namespace std;
 
 #define P15_ID_SHIFT 10
 
-#define P15_PARALLEL_RC_QPS 8
+constexpr int P15_PARALLEL_RC_QPS = 16;
+// Ensure that we can use bit mask to determine the QP index of a WR.
+static_assert(IsPowerOfTwo(P15_PARALLEL_RC_QPS));
 #define P15_PARALLEL_UD_QPS 1
 #define P15_MAX_INLINE 256
 

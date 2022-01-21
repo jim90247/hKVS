@@ -35,7 +35,16 @@ constexpr int MITSUME_YCSB_KEY_RANGE = MITSUME_MAX_KEYS;
 #define MITSUME_TEST_LOAD_WRITE_NUM 4
 #define MITSUME_TEST_LOAD_READ_NUM 2
 
-#define MITSUME_BENCHMARK_THREAD_NUM            8
+// Allocate a queue pair for each benchmark thread
+constexpr int MITSUME_BENCHMARK_THREAD_NUM = 8;
+// Ensure each thread has its own
+// conn_qp to reduce spin locks when accessing IB resources.
+static_assert(MITSUME_BENCHMARK_THREAD_NUM               // consumer thread
+                  + MITSUME_CLT_CONSUMER_GC_THREAD_NUMS  // gc thread
+                  + 1                                    // epoch thread
+              <= P15_PARALLEL_RC_QPS);
+static_assert(MITSUME_BENCHMARK_THREAD_NUM <= MITSUME_CLT_CONSUMER_NUMBER);
+
 #define MITSUME_BENCHMARK_REPLICATION           1
 #define MITSUME_BENCHMARK_SIZE                  32
 #define MITSUME_BENCHMARK_TIME                  100000
