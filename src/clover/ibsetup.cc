@@ -4,9 +4,8 @@
 
 #include "op_counter.h"
 
-// TODO: can we change this to an array if we can restrict max value of work
-// request id to a reasonably small number?
-std::unordered_map<uint64_t, unsigned int> WR_ID_WAITING_TABLE;
+constexpr size_t kMaxWrId = 1000000;
+static std::array<unsigned int, kMaxWrId> wr_status_table;
 
 void *p15_malloc(size_t length) {
   void *ret = malloc(length);
@@ -615,41 +614,28 @@ inline int hrd_poll_cq(struct ibv_cq *cq, int num_comps, struct ibv_wc *wc,
 }
 
 void userspace_init_wr_table_value(uint64_t wr_id) {
-  if (WR_ID_WAITING_TABLE.find(wr_id) != WR_ID_WAITING_TABLE.end()) {
-    die_printf("%llu is already existed\n", (unsigned long long int)wr_id);
-  }
-  WR_ID_WAITING_TABLE[wr_id] = MITSUME_WR_NULL;
+  assert(wr_id < kMaxWrId);
+  wr_status_table[wr_id] = MITSUME_WR_NULL;
 }
 
 void userspace_wait_wr_table_value(uint64_t wr_id) {
-  assert(wr_id < 1000000);
-  if (WR_ID_WAITING_TABLE[wr_id] != MITSUME_WR_NULL) {
-    MITSUME_PRINT_ERROR("wait %llu:%llx\n", (unsigned long long int)wr_id,
-                        (unsigned long long int)WR_ID_WAITING_TABLE[wr_id]);
-    assert(WR_ID_WAITING_TABLE[wr_id] == MITSUME_WR_NULL);
-  }
-  WR_ID_WAITING_TABLE[wr_id] = MITSUME_WR_WAIT;
+  assert(wr_status_table.at(wr_id) == MITSUME_WR_NULL);
+  wr_status_table[wr_id] = MITSUME_WR_WAIT;
 }
 
-inline void userspace_done_wr_table_value(uint64_t wr_id) {
-  // MITSUME_PRINT("done %llu\n", (unsigned long long int)wr_id);
-  assert(wr_id < 1000000);
-  assert(WR_ID_WAITING_TABLE[wr_id] == MITSUME_WR_WAIT);
-  WR_ID_WAITING_TABLE[wr_id] = MITSUME_WR_DONE;
+void userspace_done_wr_table_value(uint64_t wr_id) {
+  assert(wr_status_table.at(wr_id) == MITSUME_WR_WAIT);
+  wr_status_table[wr_id] = MITSUME_WR_DONE;
 }
 
-inline int userspace_check_done_wr_table(uint64_t wr_id) {
-  if (WR_ID_WAITING_TABLE[wr_id] == MITSUME_WR_DONE)
-    return 1;
-  else
-    return 0;
+bool userspace_check_done_wr_table(uint64_t wr_id) {
+  assert(wr_id < kMaxWrId);
+  return wr_status_table[wr_id] == MITSUME_WR_DONE;
 }
 
 void userspace_null_wr_table_value(uint64_t wr_id) {
-  assert(wr_id < 1000000);
-  // MITSUME_PRINT("null %llu\n", (unsigned long long int)wr_id);
-  assert(WR_ID_WAITING_TABLE[wr_id] == MITSUME_WR_DONE);
-  WR_ID_WAITING_TABLE[wr_id] = MITSUME_WR_NULL;
+  assert(wr_status_table.at(wr_id) == MITSUME_WR_DONE);
+  wr_status_table[wr_id] = MITSUME_WR_NULL;
 }
 
 int userspace_one_send(struct ibv_qp *qp, struct ibv_mr *local_mr,
