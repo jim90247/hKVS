@@ -19,11 +19,10 @@ CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++14 ${INC} -Wall -g \
 	-Wno-unused-value \
 	-Wno-unused-function \
 	-Wno-sign-compare \
-    -DBOOST_COROUTINES_NO_DEPRECATION_WARNING
+	-DBOOST_COROUTINES_NO_DEPRECATION_WARNING
 
 LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lmemcached -lnuma -g \
-	-lpapi -lboost_system -lboost_coroutine -lboost_thread \
-	-L ${BOOST_HOME}/lib
+	-lpapi -lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic
 
 src := ibsetup.o memcached.o \
 	mitsume_macro.o mitsume_util.o \
