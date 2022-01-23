@@ -1,4 +1,4 @@
 #!/bin/bash
 set -x
-pkill memcached
+pkill -2 memcached
 pkill init
