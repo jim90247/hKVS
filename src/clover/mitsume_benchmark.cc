@@ -34,62 +34,69 @@ void mitsume_test_read_ycsb(const char *input_string, int **op_key,
   *op_key = op;
 }
 
-void mitsume_benchmark_slave_func(coro_yield_t &yield,
-                                  tuple<struct mitsume_consumer_metadata *, int,
-                                        int *, mitsume_key *, int *, long *>
-                                      id_tuple) {
-  struct mitsume_consumer_metadata *thread_metadata = get<0>(id_tuple);
-  int coro_id = get<1>(id_tuple);
-  const int uniq_coro_id =
-      thread_metadata->thread_id * (MITSUME_YCSB_COROUTINE - 1) + coro_id - 1;
-  int *op_key = get<2>(id_tuple);
-  int test_size = MITSUME_BENCHMARK_SIZE;
-  mitsume_key *target_key = get<3>(id_tuple);
-  int *next_index = get<4>(id_tuple);
-  long *local_op = get<5>(id_tuple);
-  int i;
-  int ret;
-
-  uint32_t read_size;
-  char *read;
-
-  char *write;
-
+struct TraceItem {
   mitsume_key key;
-  struct thread_local_inf *local_inf = thread_metadata->local_inf;
-  read = (char *)local_inf->user_output_space[coro_id];
-  write = (char *)local_inf->user_input_space[coro_id];
+  int op;
+};
+
+std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
+                                      const int *op_trace,
+                                      const mitsume_key *key_trace, int n) {
+  assert(op_trace != nullptr);
+  assert(key_trace != nullptr);
+  assert(n >= 0);
+
+  constexpr int mod =
+      MITSUME_BENCHMARK_THREAD_NUM * (MITSUME_YCSB_COROUTINE - 1);
+  const int uniq_id = thread_id * (MITSUME_YCSB_COROUTINE - 1) + coro_id - 1;
+  std::vector<TraceItem> filtered;
+  for (int i = 0; i < n; i++) {
+    if (key_trace[i] % mod == uniq_id) {
+      TraceItem item;
+      item.key = key_trace[i];
+      item.op = op_trace[i];
+      filtered.push_back(item);
+    }
+  }
+  return filtered;
+}
+
+void mitsume_benchmark_slave_func(coro_yield_t &yield,
+                                  mitsume_consumer_metadata *thread_metadata,
+                                  int coro_id,
+                                  const std::vector<TraceItem> trace,
+                                  long *const local_op) {
+  assert(local_op != nullptr);
+  int value_size = MITSUME_BENCHMARK_SIZE;
+  int ret;
+  uint32_t read_size;
+  size_t trace_idx = 0;
+  thread_local_inf *local_inf = thread_metadata->local_inf;
+  char *const read = static_cast<char *>(local_inf->user_output_space[coro_id]);
+  char *const write = static_cast<char *>(local_inf->user_input_space[coro_id]);
   while (!end_flag) {
-    i = *next_index;
-    key = (uint64_t)target_key[i];
-    *next_index = *next_index + 1;
-    if (*next_index == MITSUME_YCSB_SIZE) {
-      *next_index = 0;
-    }
-    if (key % (MITSUME_BENCHMARK_THREAD_NUM * (MITSUME_YCSB_COROUTINE - 1)) !=
-        uniq_coro_id) {
-      // Each coroutine handles a disjoint set of keys
-      continue;
-    }
+    TraceItem item = trace.at(trace_idx);
     // MITSUME_PRINT("process %d\n", coro_id);
     if (MITSUME_YCSB_VERIFY_LEVEL)
-      memset(write, 0x31 + (key % 30), MITSUME_BENCHMARK_SIZE);
-    if (op_key[i] == 0) {
-      ret = mitsume_tool_read(thread_metadata, key, read, &read_size,
+      memset(write, 0x31 + (item.key % 30), MITSUME_BENCHMARK_SIZE);
+    if (item.op == 0) {
+      ret = mitsume_tool_read(thread_metadata, item.key, read, &read_size,
                               MITSUME_TOOL_KVSTORE_READ, coro_id, yield);
       if (MITSUME_YCSB_VERIFY_LEVEL) {
         if (read[0] != write[0])
           MITSUME_PRINT("doesn't match %c %c\n", read[0], write[0]);
       }
     } else {
-      // ret = mitsume_tool_write(thread_metadata, key, write, test_size,
-      // MITSUME_TOOL_KVSTORE_WRITE);
-      ret = mitsume_tool_write(thread_metadata, key, write, test_size,
+      ret = mitsume_tool_write(thread_metadata, item.key, write, value_size,
                                MITSUME_TOOL_KVSTORE_WRITE, coro_id, yield);
     }
     // MITSUME_PRINT("after process %d\n", coro_id);
-    if (ret != MITSUME_SUCCESS)
-      MITSUME_INFO("error %lld %d\n", (unsigned long long int)key, ret);
+    if (ret != MITSUME_SUCCESS) {
+      MITSUME_INFO("error %lu %d\n", item.key, ret);
+    }
+    if (++trace_idx == trace.size()) {
+      trace_idx = 0;
+    }
     *local_op = *local_op + 1;
   }
 }
@@ -187,7 +194,8 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
   if (thread_metadata->thread_id == 0)
     MITSUME_PRINT("finish barrier\n");
 
-  share_index = 0;
+  std::vector<TraceItem> filtered_trace[MITSUME_YCSB_COROUTINE];
+
   for (coro_i = 0; coro_i < MITSUME_YCSB_COROUTINE; coro_i++) {
     if (coro_i == MITSUME_MASTER_COROUTINE) {
       local_inf->coro_arr[coro_i] =
@@ -195,11 +203,13 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
                            make_tuple(thread_metadata, coro_i, op_key,
                                       target_key, &share_index, &local_op)));
     } else {
+      filtered_trace[coro_i] =
+          FilterCoroKeys(thread_metadata->thread_id, coro_i, op_key, target_key,
+                         MITSUME_YCSB_SIZE);
       local_inf->coro_queue.push(coro_i);
-      local_inf->coro_arr[coro_i] =
-          coro_call_t(bind(mitsume_benchmark_slave_func, _1,
-                           make_tuple(thread_metadata, coro_i, op_key,
-                                      target_key, &share_index, &local_op)));
+      local_inf->coro_arr[coro_i] = coro_call_t(
+          std::bind(mitsume_benchmark_slave_func, _1, thread_metadata, coro_i,
+                    filtered_trace[coro_i], &local_op));
     }
   }
 
