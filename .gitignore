@@ -39,5 +39,3 @@ build/
 src/herd/main
 
 src/clover/init
-src/clover/export_experiment_settings.sh
-src/clover/export_local_settings.sh
