@@ -1,5 +1,21 @@
 
 #include "mitsume_tool_gc.h"
+#include <set>
+
+/**
+ * @brief Copies GC entry.
+ */
+static void CopyGcEntry(mitsume_gc_entry *dest, mitsume_gc_entry *src) {
+  assert(dest != nullptr);
+  assert(src != nullptr);
+
+  int rep_factor = src->replication_factor;
+  mitsume_struct_copy_ptr_replication(dest->old_ptr, src->old_ptr, rep_factor);
+  mitsume_struct_copy_ptr_replication(dest->new_ptr, src->new_ptr, rep_factor);
+  dest->key = src->key;
+  dest->replication_factor = rep_factor;
+}
+
 /**
  * mitsume_tool_gc_submit_request: submit gc request
  * @thread_metadata: respected thread_metadata
@@ -99,10 +115,14 @@ int mitsume_tool_gc_shortcut_buffer(
 }
 
 /**
- * mitsume_tool_gc_shortcut_send: take a entry which is just removed from the
- * list, issue send, and push to poll list
- * @target_element: entry from buffer list
- * return: return a result after send
+ * @brief Updates remote shortcut with RDMA_WRITE and pushes the write request
+ * into internal_shortcut_send_list for polling later.
+ *
+ * The request is sent using master coroutine, which means that it won't yield
+ * to another coroutine during request submission.
+ *
+ * @param target_element entry from buffer list
+ * @return MITSUME_SUCCESS
  */
 int mitsume_tool_gc_shortcut_send(
     struct mitsume_consumer_gc_metadata *gc_metadata,
@@ -168,7 +188,7 @@ int mitsume_tool_gc_shortcut_poll(
  */
 int mitsume_tool_gc_processing_requests(
     struct mitsume_consumer_gc_metadata *gc_thread_metadata,
-    struct mitsume_gc_entry *gc_entry, int gc_number,
+    struct mitsume_gc_entry *gc_entry, int counts,
     int target_controller_id) {
 
   int coro_id = MITSUME_CLT_TEMP_COROUTINE_ID;
@@ -188,7 +208,7 @@ int mitsume_tool_gc_processing_requests(
   send->msg_header.src_id = gc_thread_metadata->local_ctx_clt->node_id;
   send->msg_header.des_id = target_controller_id;
   send->msg_header.thread_id = gc_thread_metadata->gc_thread_id;
-  send->content.msg_gc_request.gc_number = gc_number;
+  send->content.msg_gc_request.gc_number = counts;
 
   send->msg_header.reply_attr.addr =
       (uint64_t)local_inf->output_mr[coro_id]->addr;
@@ -198,18 +218,8 @@ int mitsume_tool_gc_processing_requests(
 
   reply->end_crc = MITSUME_WAIT_CRC;
 
-  for (i = 0; i < gc_number; i++) {
-    mitsume_struct_copy_ptr_replication(
-        send->content.msg_gc_request.gc_entry[i].old_ptr, gc_entry[i].old_ptr,
-        gc_entry[i].replication_factor);
-    mitsume_struct_copy_ptr_replication(
-        send->content.msg_gc_request.gc_entry[i].new_ptr, gc_entry[i].new_ptr,
-        gc_entry[i].replication_factor);
-    send->content.msg_gc_request.gc_entry[i].key = gc_entry[i].key;
-    send->content.msg_gc_request.gc_entry[i].replication_factor =
-        gc_entry[i].replication_factor;
-    // MITSUME_TOOL_PRINT_GC_POINTER_NULL(&gc_entry[i].old_ptr[0],
-    // &gc_entry[i].new_ptr[0]);
+  for (i = 0; i < counts; i++) {
+    CopyGcEntry(&send->content.msg_gc_request.gc_entry[i], &gc_entry[i]);
   }
 
   // send the request out
@@ -221,7 +231,7 @@ int mitsume_tool_gc_processing_requests(
 
   if (reply->content.success_gc_number == 0) {
     MITSUME_PRINT_ERROR("check\n");
-    for (i = 0; i < gc_number; i++) {
+    for (i = 0; i < counts; i++) {
       MITSUME_TOOL_PRINT_POINTER_NULL(
           &send->content.msg_gc_request.gc_entry[i]
                .old_ptr[MITSUME_REPLICATION_PRIMARY]);
@@ -251,8 +261,36 @@ int mitsume_tool_gc_processing_requests(
   return MITSUME_SUCCESS;
 }
 
+void UpdateShortcutsWithGcRequests(mitsume_consumer_gc_metadata *gc_thread,
+                                   int controller) {
+  std::set<mitsume_key> submitted_keys;
+
+  // At most MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS requests will be
+  // submitted
+  while (!gc_thread->internal_shortcut_buffer_list[controller].empty()) {
+    auto tmp = gc_thread->internal_shortcut_buffer_list[controller].front();
+    gc_thread->internal_shortcut_buffer_list[controller].pop();
+
+    if (submitted_keys.find(tmp->key) == submitted_keys.end()) {
+      mitsume_tool_gc_shortcut_send(gc_thread, tmp, controller);
+    } else {
+      // There's already another request that updates the shortcut for current
+      // key. Therefore, we may discard this shortcut update request.
+      mitsume_tool_cache_free(tmp,
+                              MITSUME_ALLOCTYPE_GC_SHORTCUT_UPDATE_ELEMENT);
+    }
+  }
+  while (!gc_thread->internal_shortcut_send_list[controller].empty()) {
+    auto tmp = gc_thread->internal_shortcut_send_list[controller].front();
+    gc_thread->internal_shortcut_send_list[controller].pop();
+
+    mitsume_tool_gc_shortcut_poll(gc_thread, tmp);
+    mitsume_tool_cache_free(tmp, MITSUME_ALLOCTYPE_GC_SHORTCUT_UPDATE_ELEMENT);
+  }
+}
+
 /**
- * @brief Process gc request from queued linked list
+ * @brief Process shortcut update and GC request from queue.
  * 
  * Runs at client side.
  */
@@ -265,41 +303,32 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
   struct mitsume_gc_thread_request *new_request;
   int accumulate_gc_num[MITSUME_CON_NUM],
       accumulate_shortcut_num[MITSUME_CON_NUM], accumulate_shortcut_total_num;
-  int check_flag = 0;
   struct mitsume_consumer_gc_shortcut_update_element *temp_shortcut_struct;
-  mitsume_key
-      update_shortcut_record[MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS];
-  int per_shortcut;
   int target_controller_idx = -1;
   int per_controller_idx;
   int gc_thread_id = gc_thread->gc_thread_id;
-  memset(update_shortcut_record, 0,
-         sizeof(mitsume_key) * MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS);
 
   MITSUME_INFO("running gc thread %d\n", gc_thread->gc_thread_id);
-  /*for(per_controller_idx=0;per_controller_idx<MITSUME_CON_NUM;per_controller_idx++)
-  {
-      base_entry[per_controller_idx] = kmalloc(sizeof(struct
-  mitsume_gc_entry)*MITSUME_CLT_CONSUMER_MAX_GC_NUMS, GFP_KERNEL);
-  }*/
+
+  // The queue of GC requests of this GC thread
+  auto &gc_req_queue =
+      gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id];
+  // The lock of this thread's GC request queue
+  auto &gc_req_queue_lock =
+      gc_thread->local_ctx_clt->gc_processing_queue_lock[gc_thread_id];
+
   while (!end_flag) {
-    check_flag =
-        (gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id].empty());
-    if (!check_flag) {
-      gc_thread->local_ctx_clt
-          ->gc_processing_queue_lock[gc_thread->gc_thread_id]
-          .lock();
+    if (!gc_req_queue.empty()) {
+      gc_req_queue_lock.lock();
       memset(accumulate_gc_num, 0, sizeof(int) * MITSUME_CON_NUM);
       memset(accumulate_shortcut_num, 0, sizeof(int) * MITSUME_CON_NUM);
       accumulate_shortcut_total_num = 0;
-      while (!(gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id]
-                   .empty()) &&
+      while (!gc_req_queue.empty() &&
              accumulate_shortcut_total_num <
                  MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS) {
         // get one entry from list and makesure the total available shortcut
         // number is still below limitation
-        new_request =
-            gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id].front();
+        new_request = gc_req_queue.front();
         target_controller_idx =
             new_request->target_controller - MITSUME_FIRST_ID;
         // if the next gc requests is already above limitation, abort current
@@ -309,37 +338,22 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
         if (accumulate_gc_num[target_controller_idx] ==
                 MITSUME_CLT_CONSUMER_MAX_GC_NUMS ||
             accumulate_shortcut_num[target_controller_idx] ==
-                MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS)
+                MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS) {
           break;
+        }
 
-        gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id].pop();
-        gc_thread->local_ctx_clt
-            ->gc_processing_queue_lock[gc_thread->gc_thread_id]
-            .unlock();
+        gc_req_queue.pop();
+        gc_req_queue_lock.unlock();
 
         accumulate_shortcut_total_num++;
         accumulate_shortcut_num[target_controller_idx]++;
+
+        assert(new_request->gc_mode == MITSUME_TOOL_GC_REGULAR_PROCESSING);
         if (new_request->gc_mode == MITSUME_TOOL_GC_REGULAR_PROCESSING) {
           // release lock, the speed of this gc thread is not critical.
-          mitsume_struct_copy_ptr_replication(
-              base_entry[target_controller_idx]
-                        [accumulate_gc_num[target_controller_idx]]
-                            .old_ptr,
-              new_request->gc_entry.old_ptr,
-              new_request->gc_entry.replication_factor);
-          mitsume_struct_copy_ptr_replication(
-              base_entry[target_controller_idx]
-                        [accumulate_gc_num[target_controller_idx]]
-                            .new_ptr,
-              new_request->gc_entry.new_ptr,
-              new_request->gc_entry.replication_factor);
-          base_entry[target_controller_idx]
-                    [accumulate_gc_num[target_controller_idx]]
-                        .key = new_request->gc_entry.key;
-          base_entry[target_controller_idx]
-                    [accumulate_gc_num[target_controller_idx]]
-                        .replication_factor =
-              new_request->gc_entry.replication_factor;
+          int base_entry_idx = accumulate_gc_num[target_controller_idx];
+          CopyGcEntry(&base_entry[target_controller_idx][base_entry_idx],
+                      &new_request->gc_entry);
 
           if (!new_request->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
                    .pointer ||
@@ -352,13 +366,13 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
                                     .pointer,
                                 (long unsigned int)new_request->gc_entry.key);
             MITSUME_IDLE_HERE;
-          } else {
-            mitsume_tool_gc_shortcut_buffer(
-                gc_thread, new_request->gc_entry.key,
-                new_request->gc_entry.new_ptr, &new_request->shortcut_ptr,
-                new_request->gc_entry.replication_factor,
-                target_controller_idx);
           }
+
+          // Push item into internal_shortcut_buffer_list
+          mitsume_tool_gc_shortcut_buffer(
+              gc_thread, new_request->gc_entry.key,
+              new_request->gc_entry.new_ptr, &new_request->shortcut_ptr,
+              new_request->gc_entry.replication_factor, target_controller_idx);
           accumulate_gc_num[target_controller_idx]++;
         } else if (new_request->gc_mode ==
                    MITSUME_TOOL_GC_UPDATE_SHORTCUT_ONLY) {
@@ -374,59 +388,20 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
 
         mitsume_tool_cache_free(new_request,
                                 MITSUME_ALLOCTYPE_GC_THREAD_REQUEST);
-        gc_thread->local_ctx_clt
-            ->gc_processing_queue_lock[gc_thread->gc_thread_id]
-            .lock();
+        gc_req_queue_lock.lock();
       }
-      gc_thread->local_ctx_clt
-          ->gc_processing_queue_lock[gc_thread->gc_thread_id]
-          .unlock();
+      gc_req_queue_lock.unlock();
+
       for (per_controller_idx = 0; per_controller_idx < MITSUME_CON_NUM;
            per_controller_idx++) {
-        if (!accumulate_shortcut_num[per_controller_idx])
-          continue;
-        while (!gc_thread->internal_shortcut_buffer_list[per_controller_idx]
-                    .empty()) {
-          temp_shortcut_struct =
-              gc_thread->internal_shortcut_buffer_list[per_controller_idx]
-                  .front();
-          gc_thread->internal_shortcut_buffer_list[per_controller_idx].pop();
-          for (per_shortcut = 0;
-               per_shortcut < MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS;
-               per_shortcut++) {
-            if (update_shortcut_record[per_shortcut] == 0) {
-              update_shortcut_record[per_shortcut] = temp_shortcut_struct->key;
-              mitsume_tool_gc_shortcut_send(gc_thread, temp_shortcut_struct,
-                                            per_controller_idx);
-              break;
-            } else if (update_shortcut_record[per_shortcut] ==
-                       temp_shortcut_struct->key) {
-              // MITSUME_STAT_ADD(MITSUME_STAT_CLT_REMOVE_SHORTCUT_UPDATE, 1);
-              mitsume_tool_cache_free(
-                  temp_shortcut_struct,
-                  MITSUME_ALLOCTYPE_GC_SHORTCUT_UPDATE_ELEMENT);
-              break;
-            }
-          }
-        }
-        while (!gc_thread->internal_shortcut_send_list[per_controller_idx]
-                    .empty()) {
-          temp_shortcut_struct =
-              gc_thread->internal_shortcut_send_list[per_controller_idx]
-                  .front();
-          gc_thread->internal_shortcut_send_list[per_controller_idx].pop();
-          mitsume_tool_gc_shortcut_poll(gc_thread, temp_shortcut_struct);
-          mitsume_tool_cache_free(temp_shortcut_struct,
-                                  MITSUME_ALLOCTYPE_GC_SHORTCUT_UPDATE_ELEMENT);
-        }
-        memset(update_shortcut_record, 0,
-               sizeof(mitsume_key) *
-                   MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS);
-        if (accumulate_gc_num[per_controller_idx])
+        UpdateShortcutsWithGcRequests(gc_thread, per_controller_idx);
+
+        if (accumulate_gc_num[per_controller_idx]) {
           mitsume_tool_gc_processing_requests(
               gc_thread, base_entry[per_controller_idx],
               accumulate_gc_num[per_controller_idx],
               per_controller_idx + MITSUME_FIRST_ID);
+        }
         // MITSUME_STAT_ARRAY_ADD(gc_thread->gc_thread_id, 1);
       }
     } else {

@@ -984,6 +984,17 @@ void mitsume_tool_print_pointer_key_replication(struct mitsume_ptr *entry,
                                                 mitsume_key key,
                                                 int function_line,
                                                 const char *function_name);
+
+/**
+ * @brief Copies the content from source to destination with specified replication factor.
+ * 
+ * This function can also be implemented as memcpy.
+ * 
+ * @param des the destination pointer
+ * @param src the source pointer with contents to be copied
+ * @param replication_factor replication factor
+ * @return MITSUME_SUCCESS
+ */
 int mitsume_struct_copy_ptr_replication(struct mitsume_ptr *des,
                                         struct mitsume_ptr *src,
                                         int replication_factor);

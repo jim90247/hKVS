@@ -178,18 +178,12 @@ void mitsume_tool_print_pointer_key_replication(struct mitsume_ptr *entry,
   }
 }
 
-/**
- * mitsume_struct_copy_ptr_replication: (for whole replication) setup the des
- * pointer equals to the src ptr (which can be implemented as memcpy also)
- * @des: target place
- * @src: source place
- * @replication_factor: length of the array (number of replication)
- */
 int mitsume_struct_copy_ptr_replication(struct mitsume_ptr *des,
                                         struct mitsume_ptr *src,
                                         int replication_factor) {
-  int i;
-  for (i = 0; i < replication_factor; i++) {
+  assert(des != nullptr);
+  assert(src != nullptr);
+  for (int i = 0; i < replication_factor; i++) {
     des[i].pointer = src[i].pointer;
   }
   return MITSUME_SUCCESS;
