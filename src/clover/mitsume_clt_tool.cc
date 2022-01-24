@@ -226,7 +226,8 @@ int mitsume_clt_consumer_ask_entries_from_controller(
     //}
   }
 
-  if (MITSUME_CLT_SEND_COROUTINE) {
+  // Enable this flag?
+  if constexpr (kAskEntryAsync) {
     mitsume_send_full_message_async(
         thread_metadata->local_ctx_clt->ib_ctx, thread_metadata->local_inf,
         thread_metadata->local_inf->input_mr[coro_id],

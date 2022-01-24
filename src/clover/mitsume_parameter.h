@@ -106,9 +106,9 @@ constexpr int MITSUME_SHORTCUT_NUM = MITSUME_MAX_KEYS * 4;
 #define MITSUME_TOOL_CHASING_THRESHOLD 4
 #define MITSUME_TOOL_ASKING_THRESHOLD 7
 
-#define MITSUME_CLT_CONSUMER_PER_ASK_NUMS 16
+#define MITSUME_CLT_CONSUMER_PER_ASK_NUMS 128
 #define MITSUME_CLT_CONSUMER_MAX_ENTRY_NUMS MITSUME_CLT_CONSUMER_PER_ASK_NUMS
-#define MITSUME_CLT_CONSUMER_MAX_GC_NUMS 16
+#define MITSUME_CLT_CONSUMER_MAX_GC_NUMS 128
 // Max number of consumer threads (submit open/read/write reqs) at one client
 constexpr int MITSUME_CLT_CONSUMER_NUMBER = 8;
 #define MITSUME_CLT_CONSUMER_GC_THREAD_NUMS 4
@@ -154,7 +154,8 @@ constexpr int MITSUME_CLT_CONSUMER_NUMBER = 8;
 
 #define MITSUME_TOOL_MAX_IB_SGE_SIZE 4
 
-#define MITSUME_CLT_SEND_COROUTINE 0
+// Use asynchronous send when asking more entries for write
+constexpr bool kAskEntryAsync = false;
 
 //#define MITSUME_ENABLE_FIFO_LRU_QUEUE
 #define MITSUME_LRU_SIZE 100000
