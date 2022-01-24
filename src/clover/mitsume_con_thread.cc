@@ -246,7 +246,7 @@ inline int mitsume_con_controller_thread_pick_replication_bucket(
 uint64_t mitsume_con_controller_thread_reply_entry_request(
     struct mitsume_allocator_metadata *thread_metadata,
     struct mitsume_msg *received, int coro_id) {
-  uint32_t assigned_number;
+  uint32_t assigned_number, requested_num;
   uint32_t request_size;
   int request_replication_bucket;
   uint32_t i;
@@ -262,27 +262,28 @@ uint64_t mitsume_con_controller_thread_reply_entry_request(
   MITSUME_STAT_ADD(MITSUME_STAT_CON_ASKED_ENTRY,
                    received->content.msg_entry.entry_number);
 
-  assigned_number = received->content.msg_entry.entry_number;
-  if (assigned_number > MITSUME_CLT_CONSUMER_PER_ASK_NUMS) {
+  requested_num = received->content.msg_entry.entry_number;
+  if (requested_num > MITSUME_CLT_CONSUMER_PER_ASK_NUMS) {
     MITSUME_PRINT_ERROR("asking size too big %d:%d\n",
                         received->content.msg_entry.entry_number,
                         MITSUME_CLT_CONSUMER_PER_ASK_NUMS);
-    assigned_number = MITSUME_CLT_CONSUMER_PER_ASK_NUMS;
+    requested_num = MITSUME_CLT_CONSUMER_PER_ASK_NUMS;
   }
   request_size = received->content.msg_entry.entry_size;
 
   request_replication_bucket =
       received->content.msg_entry.entry_replication_bucket;
-  if (request_replication_bucket == MITSUME_TOOL_LOAD_BALANCING_NOENTRY)
+  if (request_replication_bucket == MITSUME_TOOL_LOAD_BALANCING_NOENTRY) {
     request_replication_bucket =
         mitsume_con_controller_thread_pick_replication_bucket(thread_metadata,
                                                               received);
+  }
 
   // MITSUME_PRINT("assigned %d request_size %d bucket %d\n",
   // (int)assigned_number, (int)request_size, request_replication_bucket);
   assigned_number = mitsume_con_alloc_get_entry_from_thread(
       thread_metadata, new_entry, request_size, request_replication_bucket,
-      assigned_number);
+      requested_num);
   //    mitsume_con_alloc_get_entry_from_thread(thread_metadata, new_entry, 16,
   //    0, 16);
   // MITSUME_PRINT("assigned number %d\n", (int)assigned_number);
@@ -996,6 +997,9 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
       continue;
     }
 
+    // con_controller thread might push item into this queue at the same time.
+    // See mitsume_con_controller_thread_process_gc (called by
+    // mitsume_con_controller_thread).
     local_ctx_con->gc_bucket_lock[target_gc_thread].lock();
     if (local_ctx_con->public_gc_bucket[target_gc_thread].empty()) {
       local_ctx_con->gc_bucket_lock[target_gc_thread].unlock();

@@ -252,8 +252,9 @@ int mitsume_tool_gc_processing_requests(
 }
 
 /**
- * mitsume_tool_gc_running_thread: process gc request from queued linked list
- * return: return success
+ * @brief Process gc request from queued linked list
+ * 
+ * Runs at client side.
  */
 void *mitsume_tool_gc_running_thread(void *input_metadata) {
   struct mitsume_consumer_gc_metadata *gc_thread =
