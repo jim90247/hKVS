@@ -189,6 +189,17 @@ int mitsume_struct_copy_ptr_replication(struct mitsume_ptr *des,
   return MITSUME_SUCCESS;
 }
 
+void CopyGcEntry(mitsume_gc_entry *dest, mitsume_gc_entry *src) {
+  assert(dest != nullptr);
+  assert(src != nullptr);
+
+  int rep_factor = src->replication_factor;
+  mitsume_struct_copy_ptr_replication(dest->old_ptr, src->old_ptr, rep_factor);
+  mitsume_struct_copy_ptr_replication(dest->new_ptr, src->new_ptr, rep_factor);
+  dest->key = src->key;
+  dest->replication_factor = rep_factor;
+}
+
 /**
  * mitsume_struct_set_ptr_replication: (for whole replication) setup the des
  * pointer equals to a specific number (which is similar to memset)

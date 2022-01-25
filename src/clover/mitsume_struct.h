@@ -998,6 +998,10 @@ void mitsume_tool_print_pointer_key_replication(struct mitsume_ptr *entry,
 int mitsume_struct_copy_ptr_replication(struct mitsume_ptr *des,
                                         struct mitsume_ptr *src,
                                         int replication_factor);
+/**
+ * @brief Copies GC entry.
+ */
+void CopyGcEntry(mitsume_gc_entry *dest, mitsume_gc_entry *src);
 int mitsume_struct_setup_entry_request(struct mitsume_msg *input, int main_type,
                                        int src_id, int des_id, int thread_id,
                                        uint32_t type, mitsume_key key,

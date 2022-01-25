@@ -3,20 +3,6 @@
 #include <set>
 
 /**
- * @brief Copies GC entry.
- */
-static void CopyGcEntry(mitsume_gc_entry *dest, mitsume_gc_entry *src) {
-  assert(dest != nullptr);
-  assert(src != nullptr);
-
-  int rep_factor = src->replication_factor;
-  mitsume_struct_copy_ptr_replication(dest->old_ptr, src->old_ptr, rep_factor);
-  mitsume_struct_copy_ptr_replication(dest->new_ptr, src->new_ptr, rep_factor);
-  dest->key = src->key;
-  dest->replication_factor = rep_factor;
-}
-
-/**
  * mitsume_tool_gc_submit_request: submit gc request
  * @thread_metadata: respected thread_metadata
  * @key: target key
@@ -308,7 +294,8 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
   int per_controller_idx;
   int gc_thread_id = gc_thread->gc_thread_id;
 
-  MITSUME_INFO("running gc thread %d\n", gc_thread->gc_thread_id);
+  MITSUME_INFO("running gc thread %d (%d)\n", gc_thread->gc_thread_id,
+               gettid());
 
   // The queue of GC requests of this GC thread
   auto &gc_req_queue =
@@ -316,6 +303,17 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
   // The lock of this thread's GC request queue
   auto &gc_req_queue_lock =
       gc_thread->local_ctx_clt->gc_processing_queue_lock[gc_thread_id];
+
+  // For benchmarking
+#ifdef NDEBUG
+  constexpr bool kReportGcPerf = false;
+#else
+  constexpr bool kReportGcPerf = true;
+#endif
+  using clock = std::chrono::steady_clock;
+  long process_cnt = 0;
+  constexpr long kReportIter = 1000000;
+  auto start = clock::now();
 
   while (!end_flag) {
     if (!gc_req_queue.empty()) {
@@ -401,6 +399,19 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
               gc_thread, base_entry[per_controller_idx],
               accumulate_gc_num[per_controller_idx],
               per_controller_idx + MITSUME_FIRST_ID);
+          if constexpr (kReportGcPerf) {
+            process_cnt += accumulate_gc_num[per_controller_idx];
+            if (process_cnt >= kReportIter) {
+              auto end = clock::now();
+              double sec = std::chrono::duration<double>(end - start).count();
+              printf(
+                  "GC/Shortcut thread %d (%d) %.2f update/s, %lu req pending\n",
+                  gc_thread_id, gettid(), process_cnt / sec,
+                  gc_req_queue.size());
+              process_cnt = 0;
+              start = clock::now();
+            }
+          }
         }
         // MITSUME_STAT_ARRAY_ADD(gc_thread->gc_thread_id, 1);
       }
