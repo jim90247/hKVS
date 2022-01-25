@@ -702,7 +702,8 @@ void *mitsume_con_controller_thread(void *input_arg) {
   struct mitsume_large_msg *received_large_msg_ptr;
   struct mitsume_ctx_con *local_ctx_con = thread_metadata->local_ctx_con;
 
-  MITSUME_INFO("Enter thread model %d\n", thread_metadata->thread_id);
+  MITSUME_INFO("Enter thread model %d (%d)\n", thread_metadata->thread_id,
+               gettid());
   stick_this_thread_to_core(2 * thread_metadata->thread_id);
   struct ibv_wc input_wc[RSEC_CQ_DEPTH];
   uint32_t received_length;
@@ -980,6 +981,13 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
   uint32_t target_gc_thread = gc_thread_metadata->gc_thread_id;
   uint32_t old_gc_version;
 
+#ifndef NDEBUG
+  using clock = std::chrono::steady_clock;
+  auto perf_start = clock::now();
+  size_t processed_cnt = 0;
+  constexpr size_t kReportPerfIter = 2000000;
+#endif
+
   MITSUME_INFO("enter gc thread %d\n", gc_thread_metadata->gc_thread_id);
   local_ctx_con = gc_thread_metadata->local_ctx_con;
   mitsume_con_pick_backup_controller(
@@ -1157,7 +1165,9 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
       usleep(expect_delay - real_delay);
     }
 #endif
-
+#ifndef NDEBUG
+    processed_cnt += private_entry.size();
+#endif
     while (!private_entry.empty()) {
       uint32_t replication_factor;
       uint32_t per_replication;
@@ -1242,7 +1252,18 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
       mitsume_tool_cache_free(ready_to_recycle,
                               MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
     }
-    schedule();
+#ifndef NDEBUG
+    if (processed_cnt >= kReportPerfIter) {
+      auto perf_end = clock::now();
+      double sec = std::chrono::duration<double>(perf_end - perf_start).count();
+      printf("GC thread %d (%d): %.2f update/sec, %lu pending\n",
+             target_gc_thread, gettid(), processed_cnt / sec,
+             local_ctx_con->public_gc_bucket[target_gc_thread].size());
+      perf_start = clock::now();
+      processed_cnt = 0;
+    }
+#endif
+    // schedule();
   }
   MITSUME_INFO("gc thread %d exit\n", gc_thread_metadata->gc_thread_id);
   return NULL;
@@ -1274,13 +1295,9 @@ uint64_t mitsume_con_controller_thread_process_gc(
   struct thread_local_inf *local_inf = thread_metadata->local_inf;
   struct mitsume_msg *reply = thread_metadata->local_inf->input_space[coro_id];
   int i;
-  int change_replication_factor_request = 0;
   uint32_t target_gc_thread;
 
   uint64_t send_wr_id = 0;
-  if (received->msg_header.type ==
-      MITSUME_MISC_REQUEST_CHANGE_REPLICATION_FACTOR)
-    change_replication_factor_request = 1;
 
   // reply.content.msg_gc_request.gc_number = received_number;
   reply->content.success_gc_number = received_number;
@@ -1314,15 +1331,8 @@ uint64_t mitsume_con_controller_thread_process_gc(
     }
     gc_hash_entry = (struct mitsume_gc_hashed_entry *)mitsume_tool_cache_alloc(
         MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
-    mitsume_struct_copy_ptr_replication(
-        gc_hash_entry->gc_entry.old_ptr,
-        received->content.msg_gc_request.gc_entry[i].old_ptr,
-        replication_factor);
-    mitsume_struct_copy_ptr_replication(
-        gc_hash_entry->gc_entry.new_ptr,
-        received->content.msg_gc_request.gc_entry[i].new_ptr,
-        replication_factor);
-
+    CopyGcEntry(&gc_hash_entry->gc_entry,
+                &received->content.msg_gc_request.gc_entry[i]);
     // MITSUME_TOOL_PRINT_GC_POINTER_NULL(&gc_hash_entry->gc_entry.old_ptr[0],
     // &gc_hash_entry->gc_entry.new_ptr[0]);
 
@@ -1335,11 +1345,6 @@ uint64_t mitsume_con_controller_thread_process_gc(
                                              replication_factor);
     MITSUME_STRUCT_CHECKNULL_PTR_REPLICATION(gc_hash_entry->gc_entry.new_ptr,
                                              replication_factor);
-
-    gc_hash_entry->gc_entry.key =
-        received->content.msg_gc_request.gc_entry[i].key;
-    gc_hash_entry->gc_entry.replication_factor =
-        received->content.msg_gc_request.gc_entry[i].replication_factor;
 
     // MITSUME_TOOL_PRINT_POINTER_KEY_REPLICATION(gc_hash_entry->gc_entry.old_ptr,
     // replication_factor, gc_hash_entry->gc_entry.key);
@@ -1378,208 +1383,187 @@ uint64_t mitsume_con_controller_thread_process_gc(
     // not found in table-1
 
     if (!gc_found) {
-      // if this is a change replication factor request, it needs further
-      // process here. However, this feature is currently disabled insert into
-      // table 2
-      if (change_replication_factor_request) {
-      } else {
-        uint64_t target_hash =
-            gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]
-                .pointer;
+      uint64_t target_hash =
+          gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer;
+      gc_bucket_buffer = mitsume_con_get_gc_bucket_buffer_hashkey(
+          gc_hash_entry->gc_entry.key,
+          &gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]);
+      MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].lock();
+      MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer][target_hash] =
+          gc_hash_entry;
+      MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].unlock();
+      // MITSUME_TOOL_PRINT_GC_POINTER_NULL(&gc_hash_entry->gc_entry.old_ptr[0],
+      // &gc_hash_entry->gc_entry.new_ptr[0]);
+    } else {
+      int link_flag = 1;
+      struct mitsume_gc_hashed_entry *next_hash_entry = gc_hash_entry;
+      struct mitsume_gc_hashed_entry *ready_to_remove_from_buffer;
+      uint64_t target_hash;
+      int link_count = 0;
+      while (true) {
+        // check table 2
+        link_flag = 0;
+        gc_search_ptr_buffer = NULL;
         gc_bucket_buffer = mitsume_con_get_gc_bucket_buffer_hashkey(
-            gc_hash_entry->gc_entry.key,
-            &gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]);
+            next_hash_entry->gc_entry.key,
+            &next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
+        // if(link_count)
+        //    MITSUME_TOOL_PRINT_GC_POINTER_NULL(&next_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY],
+        //    &next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
+        target_hash =
+            next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
+                .pointer;
         MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].lock();
-        MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer][target_hash] =
-            gc_hash_entry;
+        if (MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].find(
+                target_hash) !=
+            MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].end())
+        // hit
+        {
+          link_flag = 1;
+          gc_search_ptr_buffer =
+              MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer][target_hash];
+          if ((gc_search_ptr_buffer->gc_entry.key !=
+               received->content.msg_gc_request.gc_entry[i].key) ||
+              (gc_search_ptr_buffer->gc_entry.key !=
+               received->content.msg_gc_request.gc_entry[i].key))
+            MITSUME_PRINT_ERROR(
+                "key doesn't match %llu\n",
+                (unsigned long long int)received->content.msg_gc_request
+                    .gc_entry[i]
+                    .key);
+          MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].erase(target_hash);
+          // MITSUME_TOOL_PRINT_POINTER_NULL(&next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
+        }
         MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].unlock();
-        // MITSUME_TOOL_PRINT_GC_POINTER_NULL(&gc_hash_entry->gc_entry.old_ptr[0],
-        // &gc_hash_entry->gc_entry.new_ptr[0]);
-      }
-    }
-    if (gc_found) {
-      // if this is a change replication factor request, it needs further
-      // process here. However, this feature is currently disabled
-      if (change_replication_factor_request) {
-      } else {
-        int link_flag = 1;
-        struct mitsume_gc_hashed_entry *next_hash_entry = gc_hash_entry;
-        struct mitsume_gc_hashed_entry *ready_to_remove_from_buffer;
-        uint64_t target_hash;
-        int link_count = 0;
-        while (true) {
-          // check table 2
-          link_flag = 0;
-          gc_search_ptr_buffer = NULL;
-          gc_bucket_buffer = mitsume_con_get_gc_bucket_buffer_hashkey(
-              next_hash_entry->gc_entry.key,
-              &next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
-          // if(link_count)
-          //    MITSUME_TOOL_PRINT_GC_POINTER_NULL(&next_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY],
-          //    &next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
-          target_hash =
-              next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
-                  .pointer;
-          MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].lock();
-          if (MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].find(
-                  target_hash) !=
-              MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].end())
-          // hit
-          {
-            link_flag = 1;
-            gc_search_ptr_buffer =
-                MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer][target_hash];
-            if ((gc_search_ptr_buffer->gc_entry.key !=
-                 received->content.msg_gc_request.gc_entry[i].key) ||
-                (gc_search_ptr_buffer->gc_entry.key !=
-                 received->content.msg_gc_request.gc_entry[i].key))
-              MITSUME_PRINT_ERROR(
-                  "key doesn't match %llu\n",
-                  (unsigned long long int)received->content.msg_gc_request
-                      .gc_entry[i]
-                      .key);
-            MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].erase(
-                target_hash);
-            // MITSUME_TOOL_PRINT_POINTER_NULL(&next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
+
+        /*if(link_count)
+        {
+            MITSUME_PRINT("link flag%d\n", link_flag);
+            MITSUME_TOOL_PRINT_POINTER_NULL((struct mitsume_ptr
+        *)&target_hash); std::unordered_map<uint64_t, struct
+        mitsume_gc_hashed_entry*>::iterator it =
+        MITSUME_CON_GC_HASHTABLE_BUFFER.begin();
+            while(it!=MITSUME_CON_GC_HASHTABLE_BUFFER.end())
+            {
+                uint64_t test_key = it->first;
+                MITSUME_TOOL_PRINT_POINTER_NULL((struct mitsume_ptr
+        *)&test_key);
+                MITSUME_TOOL_PRINT_GC_POINTER_NULL(&it->second->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY],
+        &it->second->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
+                MITSUME_PRINT("test %d\n", test_key == target_hash);
+                it++;
+            }
+        }*/
+
+        // MITSUME_STAT_ADD(MITSUME_STAT_TEST2, 1);
+        if (link_flag) {
+          thread_metadata->internal_gc_buffer.push(next_hash_entry);
+          // push the collected entry into queue
+          version_change++;
+          // move to the next
+          next_hash_entry = gc_search_ptr_buffer;
+          link_count++;
+        } else {
+          int found = 0;
+          struct mitsume_hash_struct *search_hash_ptr;
+          uint32_t bucket =
+              hash_min(received->content.msg_gc_request.gc_entry[i].key,
+                       MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
+
+          // struct mitsume_hash_struct *forge_backup_update_content;
+          struct mitsume_gc_hashed_entry *forge_backup_update_request;
+          // forge_backup_update_content = (struct mitsume_hash_struct
+          // *)mitsume_tool_cache_alloc(MITSUME_ALLOCTYPE_HASH_STRUCT);
+          forge_backup_update_request =
+              (struct mitsume_gc_hashed_entry *)mitsume_tool_cache_alloc(
+                  MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
+
+          if (gc_search_ptr->gc_entry.key !=
+              received->content.msg_gc_request.gc_entry[i].key) {
+            MITSUME_PRINT_ERROR(
+                "key doesn't match %llu",
+                (unsigned long long int)received->content.msg_gc_request
+                    .gc_entry[i]
+                    .key);
           }
-          MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].unlock();
+          // update table-1
+          mitsume_struct_copy_ptr_replication(gc_search_ptr->gc_entry.old_ptr,
+                                              next_hash_entry->gc_entry.old_ptr,
+                                              replication_factor);
+          mitsume_struct_copy_ptr_replication(gc_search_ptr->gc_entry.new_ptr,
+                                              next_hash_entry->gc_entry.new_ptr,
+                                              replication_factor);
+          if (gc_search_ptr->gc_entry.replication_factor !=
+              replication_factor) {
+            MITSUME_PRINT_ERROR(
+                "replication factor doesn't match %lu:%lu\n",
+                (unsigned long int)gc_search_ptr->gc_entry.replication_factor,
+                (unsigned long int)replication_factor);
+          }
 
-          /*if(link_count)
-          {
-              MITSUME_PRINT("link flag%d\n", link_flag);
-              MITSUME_TOOL_PRINT_POINTER_NULL((struct mitsume_ptr
-          *)&target_hash); std::unordered_map<uint64_t, struct
-          mitsume_gc_hashed_entry*>::iterator it =
-          MITSUME_CON_GC_HASHTABLE_BUFFER.begin();
-              while(it!=MITSUME_CON_GC_HASHTABLE_BUFFER.end())
-              {
-                  uint64_t test_key = it->first;
-                  MITSUME_TOOL_PRINT_POINTER_NULL((struct mitsume_ptr
-          *)&test_key);
-                  MITSUME_TOOL_PRINT_GC_POINTER_NULL(&it->second->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY],
-          &it->second->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
-                  MITSUME_PRINT("test %d\n", test_key == target_hash);
-                  it++;
-              }
-          }*/
+          // push the collected entry into queue
+          thread_metadata->internal_gc_buffer.push(next_hash_entry);
+          version_change++;
 
-          // MITSUME_STAT_ADD(MITSUME_STAT_TEST2, 1);
-          if (link_flag) {
-            // CHANGE_LIFE_CYCLE SHOULD CHECK HERE SINCE IT SHOULD NOT BE HERE
-            if (change_replication_factor_request) {
-              MITSUME_PRINT_ERROR("significant error, change replication "
-                                  "factor should not be here\n");
-            }
+          // update query table
+          MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].lock();
 
-            thread_metadata->internal_gc_buffer.push(next_hash_entry);
-            // push the collected entry into queue
-            version_change++;
-            // move to the next
-            next_hash_entry = gc_search_ptr_buffer;
-            link_count++;
-          } else {
-            int found = 0;
-            struct mitsume_hash_struct *search_hash_ptr;
-            uint32_t bucket =
-                hash_min(received->content.msg_gc_request.gc_entry[i].key,
-                         MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
+          if (MITSUME_CON_NAMER_HASHTABLE[bucket].find(
+                  received->content.msg_gc_request.gc_entry[i].key) !=
+              MITSUME_CON_NAMER_HASHTABLE[bucket].end()) {
+            search_hash_ptr = MITSUME_CON_NAMER_HASHTABLE
+                [bucket][received->content.msg_gc_request.gc_entry[i].key];
+            mitsume_struct_copy_ptr_replication(search_hash_ptr->ptr,
+                                                gc_search_ptr->gc_entry.new_ptr,
+                                                replication_factor);
+            // memcpy(forge_backup_update_content, search_hash_ptr,
+            // sizeof(struct mitsume_hash_struct));
+            found = 1;
+          } else
+            MITSUME_PRINT_ERROR(
+                "cannot find %llu in NAMER_TABLE\n",
+                (unsigned long long int)received->content.msg_gc_request
+                    .gc_entry[i]
+                    .key);
+          MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
 
-            // struct mitsume_hash_struct *forge_backup_update_content;
-            struct mitsume_gc_hashed_entry *forge_backup_update_request;
-            // forge_backup_update_content = (struct mitsume_hash_struct
-            // *)mitsume_tool_cache_alloc(MITSUME_ALLOCTYPE_HASH_STRUCT);
-            forge_backup_update_request =
-                (struct mitsume_gc_hashed_entry *)mitsume_tool_cache_alloc(
-                    MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
+          // forge a backup update request
+          forge_backup_update_request->gc_entry.key =
+              received->content.msg_gc_request.gc_entry[i].key;
+          forge_backup_update_request->submitted_epoch =
+              MITSUME_GC_SUBMIT_UPDATE;
+          // mitsume_con_controller_set_pointer_into_gc_hashed_structure(forge_backup_update_request,
+          // forge_backup_update_content);
 
-            if (gc_search_ptr->gc_entry.key !=
-                received->content.msg_gc_request.gc_entry[i].key) {
-              MITSUME_PRINT_ERROR(
-                  "key doesn't match %llu",
-                  (unsigned long long int)received->content.msg_gc_request
-                      .gc_entry[i]
-                      .key);
-            }
-            // update table-1
-            mitsume_struct_copy_ptr_replication(
-                gc_search_ptr->gc_entry.old_ptr,
-                next_hash_entry->gc_entry.old_ptr, replication_factor);
-            mitsume_struct_copy_ptr_replication(
-                gc_search_ptr->gc_entry.new_ptr,
-                next_hash_entry->gc_entry.new_ptr, replication_factor);
-            if (gc_search_ptr->gc_entry.replication_factor !=
-                replication_factor) {
-              MITSUME_PRINT_ERROR(
-                  "replication factor doesn't match %lu:%lu\n",
-                  (unsigned long int)gc_search_ptr->gc_entry.replication_factor,
-                  (unsigned long int)replication_factor);
-            }
-
-            // push the collected entry into queue
-            thread_metadata->internal_gc_buffer.push(next_hash_entry);
-            version_change++;
-
-            // update query table
-            MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].lock();
-
-            if (MITSUME_CON_NAMER_HASHTABLE[bucket].find(
-                    received->content.msg_gc_request.gc_entry[i].key) !=
-                MITSUME_CON_NAMER_HASHTABLE[bucket].end()) {
-              search_hash_ptr = MITSUME_CON_NAMER_HASHTABLE
-                  [bucket][received->content.msg_gc_request.gc_entry[i].key];
-              mitsume_struct_copy_ptr_replication(
-                  search_hash_ptr->ptr, gc_search_ptr->gc_entry.new_ptr,
-                  replication_factor);
-              // memcpy(forge_backup_update_content, search_hash_ptr,
-              // sizeof(struct mitsume_hash_struct));
-              found = 1;
-            } else
-              MITSUME_PRINT_ERROR(
-                  "cannot find %llu in NAMER_TABLE\n",
-                  (unsigned long long int)received->content.msg_gc_request
-                      .gc_entry[i]
-                      .key);
-            MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
-
-            // forge a backup update request
-            forge_backup_update_request->gc_entry.key =
-                received->content.msg_gc_request.gc_entry[i].key;
-            forge_backup_update_request->submitted_epoch =
-                MITSUME_GC_SUBMIT_UPDATE;
-            // mitsume_con_controller_set_pointer_into_gc_hashed_structure(forge_backup_update_request,
-            // forge_backup_update_content);
-
-            thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
-                .lock();
+          thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
+              .lock();
+          thread_metadata->local_ctx_con->public_gc_bucket[target_gc_thread]
+              .push(forge_backup_update_request);
+          int push_num = 0;
+          while (!thread_metadata->internal_gc_buffer.empty()) {
+            ready_to_remove_from_buffer =
+                thread_metadata->internal_gc_buffer.front();
+            thread_metadata->internal_gc_buffer.pop();
+            ready_to_remove_from_buffer->submitted_epoch =
+                MITSUME_GC_SUBMIT_REGULAR;  // all of them should be submitted
+                                            // as regular
             thread_metadata->local_ctx_con->public_gc_bucket[target_gc_thread]
-                .push(forge_backup_update_request);
-            int push_num = 0;
-            while (!thread_metadata->internal_gc_buffer.empty()) {
-              ready_to_remove_from_buffer =
-                  thread_metadata->internal_gc_buffer.front();
-              thread_metadata->internal_gc_buffer.pop();
-              ready_to_remove_from_buffer->submitted_epoch =
-                  MITSUME_GC_SUBMIT_REGULAR; // all of them should be submitted
-                                             // as regular
-              thread_metadata->local_ctx_con->public_gc_bucket[target_gc_thread]
-                  .push(ready_to_remove_from_buffer);
-              push_num++;
-            }
-            // MITSUME_PRINT("gc %d-%d\n", push_num,
-            // (int)MITSUME_CON_GC_HASHTABLE_BUFFER.size()); the last one should
-            // be changed into update since it points to the latest table
-            // However, the lock is still ocupied by this thread.
-            // Therefore it's safe to manipulate the data directly
-            thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
-                .unlock();
-            if (!found)
-              MITSUME_PRINT_ERROR(
-                  "key %ld is not found in namer table\n",
-                  (long unsigned int)received->content.msg_gc_request
-                      .gc_entry[i]
-                      .key);
-            break;
+                .push(ready_to_remove_from_buffer);
+            push_num++;
           }
+          // MITSUME_PRINT("gc %d-%d\n", push_num,
+          // (int)MITSUME_CON_GC_HASHTABLE_BUFFER.size()); the last one should
+          // be changed into update since it points to the latest table
+          // However, the lock is still ocupied by this thread.
+          // Therefore it's safe to manipulate the data directly
+          thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
+              .unlock();
+          if (!found)
+            MITSUME_PRINT_ERROR(
+                "key %ld is not found in namer table\n",
+                (long unsigned int)received->content.msg_gc_request.gc_entry[i]
+                    .key);
+          break;
         }
       }
     }
