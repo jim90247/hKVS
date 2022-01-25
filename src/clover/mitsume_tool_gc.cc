@@ -289,7 +289,6 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
   struct mitsume_gc_thread_request *new_request;
   int accumulate_gc_num[MITSUME_CON_NUM],
       accumulate_shortcut_num[MITSUME_CON_NUM], accumulate_shortcut_total_num;
-  struct mitsume_consumer_gc_shortcut_update_element *temp_shortcut_struct;
   int target_controller_idx = -1;
   int per_controller_idx;
   int gc_thread_id = gc_thread->gc_thread_id;
