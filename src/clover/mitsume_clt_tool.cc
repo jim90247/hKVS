@@ -165,6 +165,9 @@ int mitsume_clt_consumer_ask_entries_from_controller(
     struct mitsume_consumer_metadata *thread_metadata, int queue_id,
     int numbers, int replication_bucket, int *ret_bucket, int coro_id,
     coro_yield_t &yield) {
+#ifndef NDEBUG
+  thread_local static bool debug_printed = false;
+#endif
   uint32_t request_size;
   int target_controller_id;
   struct mitsume_msg *send;
@@ -245,8 +248,13 @@ int mitsume_clt_consumer_ask_entries_from_controller(
 
   // send the request out
   numbers = reply->content.msg_entry.entry_number;
-  // numbers = reply.content.msg_entry.entry_number;
-
+#ifndef NDEBUG
+  if (numbers < MITSUME_CLT_CONSUMER_PER_ASK_NUMS && !debug_printed) {
+    // Not enough free entries available. Check GC performance.
+    printf("Cannot fulfill new entry requests. Check GC performance.\n");
+    debug_printed = true;
+  }
+#endif
   // MITSUME_STAT_ADD(MITSUME_STAT_CLT_ASK_ENTRY, numbers);
 
   for (i = 0; i < reply->content.msg_entry.entry_number; i++) {
