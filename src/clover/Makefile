@@ -13,9 +13,13 @@ BOOST_HOME := $${HOME}/.local/boost_1_76_0
 
 INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I ${BOOST_HOME}/include
 
-DEBUG := -DNDEBUG
+ifeq ($(PROFILE),)
+	DEBUG := -DNDEBUG
+else
+	DEBUG := -fno-omit-frame-pointer -fno-inline
+endif
+
 CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++17 ${INC} -Wall -g \
-	-fno-omit-frame-pointer \
 	-Wno-unused-result \
 	-Wno-unused-value \
 	-Wno-unused-function \
