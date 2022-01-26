@@ -34,6 +34,8 @@ struct ib_post_recv_inf {
 };
 typedef struct ib_post_recv_inf ib_post_recv_inf;
 
+int wr_id_to_qp_index(uint64_t wr_id, int remote_machine_id);
+
 int test(int);
 union ibv_gid ib_get_gid(struct ibv_context *context, int port_index);
 struct ibv_device *ib_get_device(struct ib_inf *inf, int port);
@@ -65,7 +67,7 @@ int ib_post_recv_connect_qp(struct ib_inf *context,
 inline int hrd_poll_cq(struct ibv_cq *cq, int num_comps, struct ibv_wc *wc,
                        int sleep_flag);
 int userspace_one_send(struct ibv_qp *qp, struct ibv_mr *local_mr,
-                       int request_size);
+                       int request_size, uint64_t wr_id);
 int userspace_one_poll_wr(struct ibv_cq *cq, int tar_mem,
                           struct ibv_wc *input_wc, int sleep_flag);
 

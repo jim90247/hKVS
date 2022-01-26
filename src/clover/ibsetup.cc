@@ -664,7 +664,7 @@ int userspace_one_send(struct ibv_qp *qp, struct ibv_mr *local_mr,
   return 0;
 }
 
-inline int wr_id_to_qp_index(uint64_t wr_id, int remote_machine_id) {
+int wr_id_to_qp_index(uint64_t wr_id, int remote_machine_id) {
   constexpr int mask = P15_PARALLEL_RC_QPS - 1;
   int ret = (remote_machine_id * P15_PARALLEL_RC_QPS) + (wr_id & mask);
   MITSUME_STAT_ARRAY_ADD(wr_id & mask, 1);

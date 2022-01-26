@@ -165,18 +165,19 @@ int mitsume_tool_gc_shortcut_poll(
 }
 
 /**
- * mitsume_tool_tc_processing_reqiests: process gc request and send-reply to
- * controller
- * @thread_metadata: respected thread_metadata
- * @gc_entry: target gc entry
- * @gc_number: how many requests inside this entry
- * return: return success
+ * @brief Sends GC request to controller (server) and waits for completion.
+ *
+ * Runs at client side.
+ *
+ * @param gc_thread_metadata respected thread_metadata
+ * @param gc_entry target gc entry
+ * @param counts how many requests inside this entry
+ * @param target_controller_id the controller id (server node)
+ * @return MITSUME_SUCCESS
  */
-int mitsume_tool_gc_processing_requests(
+[[deprecated]] static int mitsume_tool_gc_processing_requests(
     struct mitsume_consumer_gc_metadata *gc_thread_metadata,
-    struct mitsume_gc_entry *gc_entry, int counts,
-    int target_controller_id) {
-
+    struct mitsume_gc_entry *gc_entry, int counts, int target_controller_id) {
   int coro_id = MITSUME_CLT_TEMP_COROUTINE_ID;
   struct mitsume_large_msg *send;
   struct mitsume_msg *reply;
@@ -247,6 +248,79 @@ int mitsume_tool_gc_processing_requests(
   return MITSUME_SUCCESS;
 }
 
+static void PrepareGcSendMsg(mitsume_large_msg *msg,
+                             mitsume_consumer_gc_metadata *thread_metadata,
+                             mitsume_gc_entry *src_entries, int counts,
+                             int controller, ibv_mr *resp_mr) {
+  int node_id = thread_metadata->local_ctx_clt->node_id;
+  msg->msg_header.type = MITSUME_GC_REQUEST;
+  msg->msg_header.src_id = node_id;
+  msg->msg_header.des_id = controller;
+  msg->msg_header.thread_id = thread_metadata->gc_thread_id;
+
+  msg->content.msg_gc_request.gc_number = counts;
+  for (int i = 0; i < counts; i++) {
+    CopyGcEntry(&msg->content.msg_gc_request.gc_entry[i], &src_entries[i]);
+  }
+
+  // Let controller know where to put response
+  msg->msg_header.reply_attr.addr = (uint64_t)resp_mr->addr;
+  msg->msg_header.reply_attr.rkey = resp_mr->rkey;
+  msg->msg_header.reply_attr.machine_id = node_id;
+}
+
+/**
+ * @brief Sends GC requests to server (controller) and ignores the response.
+ *
+ * This function uses input_space[0] of the GC thread to store response. Even
+ * though this function does not block for the response, the buffer will still
+ * contains response data. If another task in GC thread also uses input_space[0]
+ * for response, they might also receive responses with header being
+ * MITSUME_GC_REQUEST_ACK.
+ *
+ * @param gc_thread_metadata the GC thread metadata
+ * @param gc_entry GC requests to send
+ * @param counts number of entries in gc_entry
+ * @param controller the remote controller index (base index is 0)
+ */
+static void SendGcRequest(mitsume_consumer_gc_metadata *gc_thread_metadata,
+                          mitsume_gc_entry *gc_entry, int counts,
+                          int controller) {
+  // master coroutine
+  constexpr int coro_id = MITSUME_CLT_TEMP_COROUTINE_ID;
+
+  if (counts == 0) {
+    return;
+  }
+
+  thread_local_inf *local_inf = gc_thread_metadata->local_inf;
+  ib_inf *ib_ctx = gc_thread_metadata->local_ctx_clt->ib_ctx;
+
+  mitsume_large_msg *send =
+      reinterpret_cast<mitsume_large_msg *>(local_inf->input_space[coro_id]);
+  mitsume_msg *reply = local_inf->output_space[coro_id];
+  auto send_mr = local_inf->input_mr[coro_id];
+  auto recv_mr = local_inf->output_mr[coro_id];
+
+  PrepareGcSendMsg(send, gc_thread_metadata, gc_entry, counts, controller,
+                   recv_mr);
+
+  reply->end_crc = MITSUME_WAIT_CRC;
+
+  auto wr_id = mitsume_local_thread_get_wr_id(local_inf);
+  int qp_idx = wr_id_to_qp_index(wr_id, controller);
+  userspace_one_send(ib_ctx->conn_qp[qp_idx], send_mr,
+                     sizeof(mitsume_large_msg), wr_id);
+
+  ptr_attr tmp_ptr_attr;
+  tmp_ptr_attr.machine_id = controller;
+  auto ret = userspace_one_poll(ib_ctx, wr_id, &tmp_ptr_attr);
+  if (ret != MITSUME_SUCCESS) {
+    throw std::runtime_error("GC request polling failed");
+  }
+  mitsume_local_thread_put_wr_id(local_inf, wr_id);
+}
+
 void UpdateShortcutsWithGcRequests(mitsume_consumer_gc_metadata *gc_thread,
                                    int controller) {
   std::set<mitsume_key> submitted_keys;
@@ -276,9 +350,8 @@ void UpdateShortcutsWithGcRequests(mitsume_consumer_gc_metadata *gc_thread,
 }
 
 /**
- * @brief Process shortcut update and GC request from queue.
- * 
- * Runs at client side.
+ * @brief Main function of client-side GC thread. Process shortcut update and GC
+ * request from queue.
  */
 void *mitsume_tool_gc_running_thread(void *input_metadata) {
   struct mitsume_consumer_gc_metadata *gc_thread =
@@ -394,10 +467,14 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
         UpdateShortcutsWithGcRequests(gc_thread, per_controller_idx);
 
         if (accumulate_gc_num[per_controller_idx]) {
-          mitsume_tool_gc_processing_requests(
-              gc_thread, base_entry[per_controller_idx],
-              accumulate_gc_num[per_controller_idx],
-              per_controller_idx + MITSUME_FIRST_ID);
+          // mitsume_tool_gc_processing_requests(
+          //     gc_thread, base_entry[per_controller_idx],
+          //     accumulate_gc_num[per_controller_idx],
+          //     per_controller_idx + MITSUME_FIRST_ID);
+          // Replaced with the version which does not check the GC result
+          SendGcRequest(gc_thread, base_entry[per_controller_idx],
+                        accumulate_gc_num[per_controller_idx],
+                        per_controller_idx + MITSUME_FIRST_ID);
           if constexpr (kReportGcPerf) {
             process_cnt += accumulate_gc_num[per_controller_idx];
             if (process_cnt >= kReportIter) {
@@ -423,10 +500,12 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
 }
 
 /**
- * mitsume_tool_gc_epoch_forwarding: check to see are there any epoch forwarding
- * request
- * @epoch_thread: epoch thread metadata
- * return: return success/fail
+ * @brief A background thread to check if there are any epoch forwarding
+ * request.
+ *
+ * Runs at client side.
+ *
+ * @param epoch_thread epoch thread metadata
  */
 void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
   int coro_id = MITSUME_CLT_TEMP_COROUTINE_ID;
