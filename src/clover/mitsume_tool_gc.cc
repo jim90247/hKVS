@@ -175,7 +175,7 @@ int mitsume_tool_gc_shortcut_poll(
  * @param target_controller_id the controller id (server node)
  * @return MITSUME_SUCCESS
  */
-[[deprecated]] static int mitsume_tool_gc_processing_requests(
+static int mitsume_tool_gc_processing_requests(
     struct mitsume_consumer_gc_metadata *gc_thread_metadata,
     struct mitsume_gc_entry *gc_entry, int counts, int target_controller_id) {
   int coro_id = MITSUME_CLT_TEMP_COROUTINE_ID;
@@ -467,14 +467,13 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
         UpdateShortcutsWithGcRequests(gc_thread, per_controller_idx);
 
         if (accumulate_gc_num[per_controller_idx]) {
-          // mitsume_tool_gc_processing_requests(
-          //     gc_thread, base_entry[per_controller_idx],
-          //     accumulate_gc_num[per_controller_idx],
-          //     per_controller_idx + MITSUME_FIRST_ID);
-          // Replaced with the version which does not check the GC result
-          SendGcRequest(gc_thread, base_entry[per_controller_idx],
-                        accumulate_gc_num[per_controller_idx],
-                        per_controller_idx + MITSUME_FIRST_ID);
+          mitsume_tool_gc_processing_requests(
+              gc_thread, base_entry[per_controller_idx],
+              accumulate_gc_num[per_controller_idx],
+              per_controller_idx + MITSUME_FIRST_ID);
+          // SendGcRequest(gc_thread, base_entry[per_controller_idx],
+          //               accumulate_gc_num[per_controller_idx],
+          //               per_controller_idx + MITSUME_FIRST_ID);
           if constexpr (kReportGcPerf) {
             process_cnt += accumulate_gc_num[per_controller_idx];
             if (process_cnt >= kReportIter) {
