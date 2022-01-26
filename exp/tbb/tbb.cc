@@ -15,9 +15,18 @@ void LookUp(const HashMap& mp, Key key) {
   }
 }
 
+void Insert(HashMap& mp, Key key, Value value) {
+  if (mp.insert(std::make_pair(key, value))) {
+    std::cout << "Insert " << key << " succeed (value=" << value << ")" << std::endl;
+  } else {
+    std::cout << "Insert " << key << " failed" << std::endl;
+  }
+}
+
 int main() {
   HashMap mp;
-  mp.insert(std::make_pair(10, 100));
+  Insert(mp, 10, 100);
+  Insert(mp, 10, 200);
   LookUp(mp, 10);
   LookUp(mp, 100);
   mp.erase(10);
