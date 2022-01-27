@@ -985,7 +985,7 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
   using clock = std::chrono::steady_clock;
   auto perf_start = clock::now();
   size_t processed_cnt = 0;
-  constexpr size_t kReportPerfIter = 2000000;
+  constexpr size_t kReportPerfIter = 1000000;
 #endif
 
   MITSUME_INFO("enter gc thread %d\n", gc_thread_metadata->gc_thread_id);
@@ -1470,14 +1470,6 @@ uint64_t mitsume_con_controller_thread_process_gc(
               hash_min(received->content.msg_gc_request.gc_entry[i].key,
                        MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
 
-          // struct mitsume_hash_struct *forge_backup_update_content;
-          struct mitsume_gc_hashed_entry *forge_backup_update_request;
-          // forge_backup_update_content = (struct mitsume_hash_struct
-          // *)mitsume_tool_cache_alloc(MITSUME_ALLOCTYPE_HASH_STRUCT);
-          forge_backup_update_request =
-              (struct mitsume_gc_hashed_entry *)mitsume_tool_cache_alloc(
-                  MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
-
           if (gc_search_ptr->gc_entry.key !=
               received->content.msg_gc_request.gc_entry[i].key) {
             MITSUME_PRINT_ERROR(
@@ -1516,8 +1508,6 @@ uint64_t mitsume_con_controller_thread_process_gc(
             mitsume_struct_copy_ptr_replication(search_hash_ptr->ptr,
                                                 gc_search_ptr->gc_entry.new_ptr,
                                                 replication_factor);
-            // memcpy(forge_backup_update_content, search_hash_ptr,
-            // sizeof(struct mitsume_hash_struct));
             found = 1;
           } else
             MITSUME_PRINT_ERROR(
@@ -1527,18 +1517,8 @@ uint64_t mitsume_con_controller_thread_process_gc(
                     .key);
           MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
 
-          // forge a backup update request
-          forge_backup_update_request->gc_entry.key =
-              received->content.msg_gc_request.gc_entry[i].key;
-          forge_backup_update_request->submitted_epoch =
-              MITSUME_GC_SUBMIT_UPDATE;
-          // mitsume_con_controller_set_pointer_into_gc_hashed_structure(forge_backup_update_request,
-          // forge_backup_update_content);
-
           thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
               .lock();
-          thread_metadata->local_ctx_con->public_gc_bucket[target_gc_thread]
-              .push(forge_backup_update_request);
           int push_num = 0;
           while (!thread_metadata->internal_gc_buffer.empty()) {
             ready_to_remove_from_buffer =
