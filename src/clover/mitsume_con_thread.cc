@@ -22,10 +22,9 @@ using DelayedGcEntryHashMap =
  */
 DelayedGcEntryHashMap delayed_gc_entries;
 
-mutex
-    MITSUME_CON_NAMER_HASHTABLE_LOCK[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-std::unordered_map<mitsume_key, struct mitsume_hash_struct *>
-    MITSUME_CON_NAMER_HASHTABLE[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
+using NamerHashMap =
+    tbb::concurrent_hash_map<mitsume_key, mitsume_hash_struct *>;
+NamerHashMap namer_map;
 
 inline uint32_t mitsume_con_get_gc_bucket_buffer_hashkey(mitsume_ptr *tar_ptr) {
   return hash_min(tar_ptr->pointer, MITSUME_CON_GC_HASHTABLE_SIZE_BIT);
@@ -320,32 +319,20 @@ uint64_t mitsume_con_controller_thread_reply_entry_request(
  * @ret_ptr: return entry-request memory space
  * return: return success
  */
-int mitsume_con_controller_thread_query_namer_table(
+static int mitsume_con_controller_thread_query_namer_table(
     mitsume_key key, struct mitsume_entry_request *ret_ptr) {
-  int found = 0;
-  struct mitsume_hash_struct *search_hash_ptr;
-  uint64_t bucket = hash_min(key, MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
-
-  MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].lock();
-  auto it = MITSUME_CON_NAMER_HASHTABLE[bucket].find(key);
-  if (it == MITSUME_CON_NAMER_HASHTABLE[bucket].end())
-    found = 0;
-  else {
-    found = 1;
-    search_hash_ptr = it->second;
-  }
-
-  if (found) {
-    // reply.content.msg_entry_request.ptr.pointer =
-    // search_hash_ptr->ptr.pointer;
+  NamerHashMap::accessor accessor;
+  if (namer_map.find(accessor, key)) {
+    auto search_hash_ptr = accessor->second;
     mitsume_struct_copy_ptr_replication(ret_ptr->ptr, search_hash_ptr->ptr,
                                         search_hash_ptr->replication_factor);
     ret_ptr->shortcut_ptr.pointer = search_hash_ptr->shortcut_ptr.pointer;
     ret_ptr->replication_factor = search_hash_ptr->replication_factor;
     ret_ptr->version = search_hash_ptr->version;
+    return true;
+  } else {
+    return false;
   }
-  MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
-  return found;
 }
 
 /**
@@ -361,8 +348,7 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
     struct mitsume_msg *received, int coro_id) {
   struct thread_local_inf *local_inf = thread_metadata->local_inf;
   struct mitsume_ctx_con *local_ctx_con = thread_metadata->local_ctx_con;
-  struct mitsume_entry_request *request =
-      &(received->content.msg_entry_request);
+  const mitsume_entry_request *request = &(received->content.msg_entry_request);
   uint64_t send_wr_id = 0;
   // struct mitsume_ctx_con *local_ctx_con = thread_metadata->local_ctx_con;
   switch (request->type) {
@@ -423,12 +409,10 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
   //[TODO] this part is tricky. Found would happen if there are two threads
   //doing open at the same time, and race condition happens
   case MITSUME_ENTRY_OPEN: {
-    int found = 0;
     // struct mitsume_hash_struct *search_hash_ptr;
     struct mitsume_hash_struct *current_hash_ptr,
         *backup_create_request_content;
     struct mitsume_shortcut_entry current_shortcut;
-    int bucket = hash_min(request->key, MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
     int ret;
     uint32_t reply_lh = 0;
     struct mitsume_msg *reply = local_inf->input_space[coro_id];
@@ -451,45 +435,34 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
     if (!ret) // alloc shortcut successfully
     {
       current_hash_ptr->shortcut_ptr.pointer = current_shortcut.ptr.pointer;
-      MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].lock();
+      bool found;
+      {
+        NamerHashMap::const_accessor accessor;
+        found = namer_map.find(accessor, request->key);
+        if (!found) {
+          namer_map.insert(std::make_pair(request->key, current_hash_ptr));
+          reply_lh = MITSUME_GET_PTR_LH(current_shortcut.ptr.pointer);
 
-      auto it = MITSUME_CON_NAMER_HASHTABLE[bucket].find(request->key);
-      if (it == MITSUME_CON_NAMER_HASHTABLE[bucket].end()) {
-        found = 0;
-      } else {
-        found = 1;
-      }
-
-      if (!found) {
-        MITSUME_CON_NAMER_HASHTABLE[bucket][request->key] = current_hash_ptr;
-        reply_lh = MITSUME_GET_PTR_LH(current_shortcut.ptr.pointer);
-
-        if (mitsume_struct_setup_entry_request(
-                reply, MITSUME_ENTRY_REQUEST_ACK, thread_metadata->node_id,
-                received->msg_header.src_id, thread_metadata->thread_id,
-                MITSUME_ENTRY_OPEN, request->key, request->ptr,
-                &(current_shortcut.ptr),
-                request->replication_factor) != MITSUME_SUCCESS) {
-          MITSUME_PRINT_ERROR("error in request setup\n");
+          if (mitsume_struct_setup_entry_request(
+                  reply, MITSUME_ENTRY_REQUEST_ACK, thread_metadata->node_id,
+                  received->msg_header.src_id, thread_metadata->thread_id,
+                  MITSUME_ENTRY_OPEN, request->key, request->ptr,
+                  &(current_shortcut.ptr),
+                  request->replication_factor) != MITSUME_SUCCESS) {
+            MITSUME_PRINT_ERROR("error in request setup\n");
+          }
+          // copy the current hash table, this will be used by kthread_run to
+          // send a request to backup controller reply will be send out after
+          // backup is created
+          memcpy(backup_create_request_content, current_hash_ptr,
+                 sizeof(struct mitsume_hash_struct));
         }
-        // copy the current hash table, this will be used by kthread_run to send
-        // a request to backup controller reply will be send out after backup is
-        // created
-        memcpy(backup_create_request_content, current_hash_ptr,
-               sizeof(struct mitsume_hash_struct));
+        // accessor destructs when leaving this block
       }
-      MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
       // MITSUME_PRINT("ask %lu lh %lu found %d\n", (long unsigned
       // int)request->key, (long unsigned
       // int)MITSUME_GET_PTR_LH(request->ptr[MITSUME_REPLICATION_PRIMARY].pointer),
       // found);
-      if (found) {
-        if (mitsume_struct_setup_entry_request(
-                reply, MITSUME_ENTRY_REQUEST_ACK, thread_metadata->node_id,
-                received->msg_header.src_id, thread_metadata->thread_id,
-                MITSUME_ENTRY_OPEN, request->key, 0, 0, 0) != MITSUME_SUCCESS)
-          MITSUME_PRINT_ERROR("error in request setup\n");
-      }
       if (!found) // if the shortcut is created, write the pointer to the
                   // shortcut, build the first base of gc into gc-table 1
       {
@@ -1382,15 +1355,8 @@ uint64_t mitsume_con_controller_thread_process_gc(
           next_hash_entry = gc_search_ptr_buffer;
           link_count++;
         } else {
-          uint32_t bucket =
-              hash_min(received->content.msg_gc_request.gc_entry[i].key,
-                       MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
-
-          if (gc_search_ptr->gc_entry.key !=
-              received->content.msg_gc_request.gc_entry[i].key) {
-            MITSUME_PRINT_ERROR(
-                "key doesn't match %lu\n",
-                received->content.msg_gc_request.gc_entry[i].key);
+          if (gc_search_ptr->gc_entry.key != req_key) {
+            MITSUME_PRINT_ERROR("key doesn't match %lu\n", req_key);
           }
           // Update the entry in next_gc_entry_map
           mitsume_struct_copy_ptr_replication(gc_search_ptr->gc_entry.old_ptr,
@@ -1410,21 +1376,18 @@ uint64_t mitsume_con_controller_thread_process_gc(
           thread_metadata->internal_gc_buffer.push(next_hash_entry);
 
           // update query table
-          MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].lock();
-
-          auto it = MITSUME_CON_NAMER_HASHTABLE[bucket].find(
-              received->content.msg_gc_request.gc_entry[i].key);
-          if (it != MITSUME_CON_NAMER_HASHTABLE[bucket].end()) {
-            auto namer_ptr = it->second;
-            mitsume_struct_copy_ptr_replication(namer_ptr->ptr,
-                                                gc_search_ptr->gc_entry.new_ptr,
-                                                replication_factor);
-          } else {
-            MITSUME_PRINT_ERROR(
-                "cannot find %lu in NAMER_TABLE\n",
-                received->content.msg_gc_request.gc_entry[i].key);
+          {
+            NamerHashMap::accessor accessor;
+            if (namer_map.find(accessor, req_key)) {
+              auto namer_ptr = accessor->second;
+              mitsume_struct_copy_ptr_replication(
+                  namer_ptr->ptr, gc_search_ptr->gc_entry.new_ptr,
+                  replication_factor);
+            } else {
+              MITSUME_PRINT_ERROR("cannot find %lu in NAMER_TABLE\n", req_key);
+            }
+            // accessor destructs when leaving the block
           }
-          MITSUME_CON_NAMER_HASHTABLE_LOCK[bucket].unlock();
 
           thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
               .lock();
