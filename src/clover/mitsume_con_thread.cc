@@ -4,22 +4,28 @@
 
 using NextGcEntryHashMap =
     tbb::concurrent_hash_map<mitsume_key, mitsume_gc_hashed_entry *>;
-// Stores the last garbage collected entry of a key. old_ptr is the last garbage
-// collected entry, and new_ptr is the oldest entry which is not garbage
-// collected yet.
+/**
+ * @brief Stores the last garbage collected entry of a key.
+ *
+ * old_ptr is the last garbage collected entry, and new_ptr is the oldest entry
+ * which is not garbage collected yet.
+ */
 NextGcEntryHashMap next_gc_entry_map;
+
+using DelayedGcEntryHashMap =
+    tbb::concurrent_hash_map<uintptr_t, mitsume_gc_hashed_entry *>;
+/**
+ * @brief Stores the entries that should be garbage collected once all of their
+ * ancestors are garbage collected.
+ * 
+ * The key of this table is pointer, not mitsume_key.
+ */
+DelayedGcEntryHashMap delayed_gc_entries;
 
 mutex
     MITSUME_CON_NAMER_HASHTABLE_LOCK[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
 std::unordered_map<mitsume_key, struct mitsume_hash_struct *>
     MITSUME_CON_NAMER_HASHTABLE[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-
-mutex MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK
-    [1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-// Stores the entries that should be garbage collected.
-std::unordered_map<uint64_t, struct mitsume_gc_hashed_entry *>
-    MITSUME_CON_GC_HASHTABLE_BUFFER[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-// the key of this table is pointer - not key
 
 inline uint32_t mitsume_con_get_gc_bucket_buffer_hashkey(mitsume_ptr *tar_ptr) {
   return hash_min(tar_ptr->pointer, MITSUME_CON_GC_HASHTABLE_SIZE_BIT);
@@ -97,12 +103,7 @@ void mitsume_con_thread_init(struct mitsume_ctx_con *local_ctx_con) {
   while (1) {
     stat_count++;
     sleep(5);
-    // uint32_t size = MITSUME_CON_GC_HASHTABLE_BUFFER.size();
-    uint32_t size = 0;
-    for (i = 0; i < 1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT; i++) {
-      size += MITSUME_CON_GC_HASHTABLE_BUFFER[i].size();
-    }
-    MITSUME_PRINT("gc hashtable buffer size %d\n", (int)size);
+    MITSUME_PRINT("gc hashtable buffer size %lu\n", delayed_gc_entries.size());
     local_ctx_con->public_epoch_list_lock.lock();
     MITSUME_PRINT("epoch list size %d\n",
                   (int)local_ctx_con->public_epoch_list->size());
@@ -1293,12 +1294,11 @@ uint64_t mitsume_con_controller_thread_process_gc(
 
   for (int i = 0; i < num_reqs; i++) {
     // gc related
-    uint32_t gc_bucket_buffer;
     // Copy of the GC entry in request
     struct mitsume_gc_hashed_entry *gc_hash_entry;
     // The GC entry found in next_gc_entry_map
     struct mitsume_gc_hashed_entry *gc_search_ptr = NULL;
-    // The GC entry found in BUFFER
+    // The GC entry found in delayed_gc_entries
     struct mitsume_gc_hashed_entry *gc_search_ptr_buffer = NULL;
     bool gc_found = false;
     uint32_t replication_factor;
@@ -1342,18 +1342,14 @@ uint64_t mitsume_con_controller_thread_process_gc(
        * recorded in next_gc_entry_map has not been garbage collected, the
        * buffer used by this entry cannot be freed yet.
        */
-      uint64_t target_hash =
-          gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer;
-      gc_bucket_buffer = mitsume_con_get_gc_bucket_buffer_hashkey(
-          &gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]);
-      MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].lock();
-      MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer][target_hash] =
-          gc_hash_entry;
-      MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].unlock();
+      bool ok = delayed_gc_entries.insert(std::make_pair(
+          gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer,
+          gc_hash_entry));
+      if (!ok) {
+        MITSUME_PRINT_ERROR("Conflicting entry in delayed_gc_entries!\n");
+      }
     } else {
-      int link_flag = 1;
       struct mitsume_gc_hashed_entry *next_hash_entry = gc_hash_entry;
-      uint64_t target_hash;
       int link_count = 0;
       while (true) {
         /* There might be multiple entries to remove. Some GC request might be
@@ -1361,29 +1357,23 @@ uint64_t mitsume_con_controller_thread_process_gc(
          * their parents are not garbage collected yet.
          */
         // check table 2
-        link_flag = 0;
+        bool link_flag = false;
         gc_search_ptr_buffer = NULL;
-        gc_bucket_buffer = mitsume_con_get_gc_bucket_buffer_hashkey(
-            &next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]);
-        target_hash =
-            next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
-                .pointer;
-        MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].lock();
-        auto it =
-            MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].find(target_hash);
-        // hit
-        if (it != MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].end()) {
-          link_flag = 1;
-          gc_search_ptr_buffer = it->second;
-          if (gc_search_ptr_buffer->gc_entry.key !=
-              received->content.msg_gc_request.gc_entry[i].key) {
-            MITSUME_PRINT_ERROR(
-                "key doesn't match %lu\n",
-                received->content.msg_gc_request.gc_entry[i].key);
+        {
+          DelayedGcEntryHashMap::accessor accessor;
+          link_flag = delayed_gc_entries.find(
+              accessor,
+              next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
+                  .pointer);
+          if (link_flag) {
+            gc_search_ptr_buffer = accessor->second;
+            if (gc_search_ptr_buffer->gc_entry.key != req_key) {
+              MITSUME_PRINT_ERROR("Key mismatch (%lu)\n", req_key);
+            }
+            delayed_gc_entries.erase(accessor);
           }
-          MITSUME_CON_GC_HASHTABLE_BUFFER[gc_bucket_buffer].erase(it);
+          // accessor destructs when exiting this block
         }
-        MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK[gc_bucket_buffer].unlock();
 
         if (link_flag) {
           // push the collected entry into queue
