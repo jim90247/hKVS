@@ -27,7 +27,7 @@ CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++17 ${INC} -Wall -g \
 	-DBOOST_COROUTINES_NO_DEPRECATION_WARNING
 
 LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lmemcached -lnuma -g \
-	-lpapi -lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic
+	-lpapi -lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic -ltbb
 
 src := ibsetup.o memcached.o \
 	mitsume_macro.o mitsume_util.o \

@@ -1,17 +1,18 @@
 #include "mitsume_con_thread.h"
 
+#include <oneapi/tbb/concurrent_hash_map.h>
+
+using NextGcEntryHashMap =
+    tbb::concurrent_hash_map<mitsume_key, mitsume_gc_hashed_entry *>;
+// Stores the last garbage collected entry of a key. old_ptr is the last garbage
+// collected entry, and new_ptr is the oldest entry which is not garbage
+// collected yet.
+NextGcEntryHashMap next_gc_entry_map;
+
 mutex
     MITSUME_CON_NAMER_HASHTABLE_LOCK[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
 std::unordered_map<mitsume_key, struct mitsume_hash_struct *>
     MITSUME_CON_NAMER_HASHTABLE[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-
-mutex MITSUME_CON_GC_HASHTABLE_CURRENT_LOCK
-    [1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
-// Stores the last garbage collected entry of a key. old_ptr is the last garbage
-// collected entry, and new_ptr is the oldest entry which is not garbage
-// collected yet.
-std::unordered_map<mitsume_key, struct mitsume_gc_hashed_entry *>
-    MITSUME_CON_GC_HASHTABLE_CURRENT[1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
 
 mutex MITSUME_CON_GC_HASHTABLE_BUFFER_LOCK
     [1 << MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT];
@@ -499,9 +500,7 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
         uint64_t shortcut_wr_id;
         // that's why writing shortcut uses output space which is unoccupied
         // gc related
-        int gc_bucket;
         struct mitsume_gc_hashed_entry *gc_h_entry;
-        int gc_found = 0;
         assert(reply_lh);
 
         // set correct offset (real ptr)
@@ -536,23 +535,10 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
         gc_h_entry->gc_entry.key = reply->content.msg_entry_request.key;
         gc_h_entry->gc_entry.replication_factor = request->replication_factor;
 
-        gc_bucket = hash_min(gc_h_entry->gc_entry.key,
-                             MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
-        MITSUME_CON_GC_HASHTABLE_CURRENT_LOCK[gc_bucket].lock();
-        if (MITSUME_CON_GC_HASHTABLE_CURRENT[gc_bucket].find(
-                gc_h_entry->gc_entry.key) !=
-            MITSUME_CON_GC_HASHTABLE_CURRENT[gc_bucket].end()) {
-          gc_found = 1;
-        }
-        if (!gc_found) {
-          MITSUME_CON_GC_HASHTABLE_CURRENT[gc_bucket]
-                                          [gc_h_entry->gc_entry.key] =
-                                              gc_h_entry;
-        }
-        MITSUME_CON_GC_HASHTABLE_CURRENT_LOCK[gc_bucket].unlock();
-        if (gc_found) {
-          MITSUME_PRINT_ERROR("gc collision in gc table 1 with key %ld\n",
-                              (long unsigned int)gc_h_entry->gc_entry.key);
+        if (!next_gc_entry_map.insert(
+                std::make_pair(gc_h_entry->gc_entry.key, gc_h_entry))) {
+          MITSUME_PRINT_ERROR("Collision in next_gc_entry_map (key=%lu)\n",
+                              gc_h_entry->gc_entry.key);
           MITSUME_TOOL_PRINT_POINTER_KEY_REPLICATION(
               gc_h_entry->gc_entry.new_ptr, 0, request->key);
         }
@@ -1277,6 +1263,12 @@ mitsume_con_pick_gc_thread(struct mitsume_allocator_metadata *thread_metadata) {
   return thread_metadata->gc_task_counter;
 }
 
+static bool AreContiguousEntries(mitsume_gc_entry first,
+                                 mitsume_gc_entry second) {
+  return first.new_ptr[MITSUME_REPLICATION_PRIMARY].pointer ==
+         second.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer;
+}
+
 /**
  * mitsume_con_controller_thread_process_gc: processing point of a message when
  * it's asking for GC related requests
@@ -1291,29 +1283,24 @@ uint64_t mitsume_con_controller_thread_process_gc(
   // push all the received GC into a linked-tracing hashtable structure for
   // future search During linkedlist search, if the head has been changed,
   // remember to modify gc-hashtable-1
-  int received_number = received->content.msg_gc_request.gc_number;
+  int num_reqs = received->content.msg_gc_request.gc_number;
   struct thread_local_inf *local_inf = thread_metadata->local_inf;
   struct mitsume_msg *reply = thread_metadata->local_inf->input_space[coro_id];
-  int i;
-  uint32_t target_gc_thread;
-
   uint64_t send_wr_id = 0;
 
-  reply->content.success_gc_number = received_number;
-  target_gc_thread = mitsume_con_pick_gc_thread(thread_metadata);
+  reply->content.success_gc_number = num_reqs;
+  auto target_gc_thread = mitsume_con_pick_gc_thread(thread_metadata);
 
-  for (i = 0; i < received_number; i++) {
+  for (int i = 0; i < num_reqs; i++) {
     // gc related
-    uint32_t gc_bucket;
     uint32_t gc_bucket_buffer;
-    UNUSED(gc_bucket_buffer);
     // Copy of the GC entry in request
     struct mitsume_gc_hashed_entry *gc_hash_entry;
-    // The GC entry found in CURRENT
+    // The GC entry found in next_gc_entry_map
     struct mitsume_gc_hashed_entry *gc_search_ptr = NULL;
     // The GC entry found in BUFFER
     struct mitsume_gc_hashed_entry *gc_search_ptr_buffer = NULL;
-    int gc_found = 0;
+    bool gc_found = false;
     uint32_t replication_factor;
 
     replication_factor =
@@ -1327,6 +1314,7 @@ uint64_t mitsume_con_controller_thread_process_gc(
         MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
     CopyGcEntry(&gc_hash_entry->gc_entry,
                 &received->content.msg_gc_request.gc_entry[i]);
+    const mitsume_key req_key = gc_hash_entry->gc_entry.key;
 
     // CHANGE_LIFE_CYCLE SHOULD avoid check here since it would contain zero for
     // the target cleaned object and it would have old_ptr only, new_ptr should
@@ -1338,32 +1326,21 @@ uint64_t mitsume_con_controller_thread_process_gc(
     MITSUME_STRUCT_CHECKNULL_PTR_REPLICATION(gc_hash_entry->gc_entry.new_ptr,
                                              replication_factor);
 
-    gc_bucket = hash_min(gc_hash_entry->gc_entry.key,
-                         MITSUME_CON_NAMER_HASHTABLE_SIZE_BIT);
-
-    MITSUME_CON_GC_HASHTABLE_CURRENT_LOCK[gc_bucket].lock();
-
-    // check table-1
-    auto it = MITSUME_CON_GC_HASHTABLE_CURRENT[gc_bucket].find(
-        gc_hash_entry->gc_entry.key);
-    if (it != MITSUME_CON_GC_HASHTABLE_CURRENT[gc_bucket].end()) {
-      gc_search_ptr = it->second;
-      if (gc_search_ptr->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
-              .pointer ==
-          gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]
-              .pointer) {
-        MITSUME_STRUCT_CHECKEQUAL_PTR_REPLICATION(
-            gc_search_ptr->gc_entry.new_ptr, gc_hash_entry->gc_entry.old_ptr,
-            replication_factor);
-        gc_found = 1;
-      }
+    // R/W access within this for loop
+    NextGcEntryHashMap::accessor gc_entry_accessor;
+    if (next_gc_entry_map.find(gc_entry_accessor, req_key)) {
+      gc_search_ptr = gc_entry_accessor->second;
+      gc_found = AreContiguousEntries(gc_search_ptr->gc_entry,
+                                      gc_hash_entry->gc_entry);
+    } else {
+      gc_found = false;
     }
 
     if (!gc_found) {
       /* This entry should be garbage collected. However, since one of the
        * intermediate entry between the entry in the request and the entry
-       * recorded in CURRENT has not been garbage collected, the buffer used by
-       * this entry cannot be freed yet.
+       * recorded in next_gc_entry_map has not been garbage collected, the
+       * buffer used by this entry cannot be freed yet.
        */
       uint64_t target_hash =
           gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer;
@@ -1425,7 +1402,7 @@ uint64_t mitsume_con_controller_thread_process_gc(
                 "key doesn't match %lu\n",
                 received->content.msg_gc_request.gc_entry[i].key);
           }
-          // Update CURRENT table
+          // Update the entry in next_gc_entry_map
           mitsume_struct_copy_ptr_replication(gc_search_ptr->gc_entry.old_ptr,
                                               next_hash_entry->gc_entry.old_ptr,
                                               replication_factor);
@@ -1478,7 +1455,6 @@ uint64_t mitsume_con_controller_thread_process_gc(
         }
       }
     }
-    MITSUME_CON_GC_HASHTABLE_CURRENT_LOCK[gc_bucket].unlock();
   }
   reply->msg_header.type = MITSUME_GC_REQUEST_ACK;
   reply->msg_header.des_id = received->msg_header.src_id;
@@ -1495,7 +1471,7 @@ uint64_t mitsume_con_controller_thread_process_gc(
                                sizeof(mitsume_msg));
     send_wr_id = reply_wr_id;
   }
-  MITSUME_STAT_ADD(MITSUME_STAT_CON_RECEIVED_GC, received_number);
+  MITSUME_STAT_ADD(MITSUME_STAT_CON_RECEIVED_GC, num_reqs);
   return send_wr_id;
 }
 

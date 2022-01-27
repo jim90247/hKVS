@@ -1,3 +1,5 @@
+find_package(TBB REQUIRED)
+
 set(MITSUME_SRC
   ibsetup.cc
   ibsetup.h
@@ -36,7 +38,7 @@ set(MITSUME_SRC
 )
 
 add_library(mitsume ${MITSUME_SRC})
-target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi boost_system boost_coroutine boost_thread)
+target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi boost_system boost_coroutine boost_thread TBB::tbb)
 # set LTO
 set_property(TARGET mitsume PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
 
