@@ -14,7 +14,7 @@ BOOST_HOME := $${HOME}/.local/boost_1_76_0
 INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I ${BOOST_HOME}/include
 
 ifeq ($(PROFILE),)
-	DEBUG := -DNDEBUG
+	DEBUG :=
 else
 	DEBUG := -fno-omit-frame-pointer -fno-inline
 endif
