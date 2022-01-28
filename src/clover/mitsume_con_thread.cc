@@ -647,6 +647,36 @@ uint64_t mitsume_con_controller_thread_process_stat(
   return send_wr_id;
 }
 
+/// Specialized polling function for server_recv_cq
+[[maybe_unused]] static void PollServerRecvCq(ibv_cq *cq, ibv_wc **wc) {
+  constexpr int kMaxPolls = 32;
+
+  thread_local ibv_wc wc_buf[kMaxPolls];
+  thread_local int last_polls = 0;
+  thread_local int buf_idx = 0;
+
+  *wc = nullptr;
+
+  if (buf_idx == last_polls) {
+    last_polls = 0;
+    while (last_polls == 0) {
+      last_polls = ibv_poll_cq(cq, kMaxPolls, wc_buf);
+      if (last_polls < 0) {
+        throw std::runtime_error("ibv_poll_cq failed");
+      }
+    }
+    buf_idx = 0;
+  }
+
+  auto status = wc_buf[buf_idx].status;
+  if (status != IBV_WC_SUCCESS) {
+    std::cerr << "Bad wc status " << status << ": " << ibv_wc_status_str(status)
+              << std::endl;
+    throw std::runtime_error("Bad work completion status");
+  }
+  *wc = &wc_buf[buf_idx++];
+}
+
 /**
  * mitsume_con_controller_thread: entry point of controller thread - similar to
  * LITE's waiting_queue_handler (but it's polling lite receive)
@@ -665,19 +695,19 @@ void *mitsume_con_controller_thread(void *input_arg) {
   MITSUME_INFO("Enter thread model %d (%d)\n", thread_metadata->thread_id,
                gettid());
   stick_this_thread_to_core(2 * thread_metadata->thread_id);
-  struct ibv_wc input_wc[RSEC_CQ_DEPTH];
   uint32_t received_length;
   uint64_t received_id;
   long long int target_mr;
   long long int target_qp;
-  int num_of_poll;
   uint64_t send_wr_id = 0;
   ptr_attr *target_qp_mr_attr;
   int fake_coro;
 
-  assert(MITSUME_CON_ASYNC_MESSAGE_POLL_SIZE < MITSUME_CLT_COROUTINE_NUMBER);
-  for (int i = 0; i < MITSUME_CLT_COROUTINE_NUMBER; i++)
+  static_assert(MITSUME_CON_ASYNC_MESSAGE_POLL_SIZE <
+                MITSUME_CLT_COROUTINE_NUMBER);
+  for (int i = 0; i < MITSUME_CLT_COROUTINE_NUMBER; i++) {
     thread_metadata->fake_coro_queue.push(i);
+  }
 
   /*if(thread_metadata->thread_id == 0)
   {
@@ -696,11 +726,11 @@ void *mitsume_con_controller_thread(void *input_arg) {
     fake_coro = thread_metadata->fake_coro_queue.front();
     thread_metadata->fake_coro_queue.pop();
 
-    num_of_poll = userspace_one_poll_wr(local_ctx_con->ib_ctx->server_recv_cq,
-                                        1, input_wc, 0);
-    assert(num_of_poll == 1);
-    received_length = input_wc[0].byte_len;
-    received_id = input_wc[0].wr_id;
+    ibv_wc input_wc;
+    userspace_one_poll_wr(local_ctx_con->ib_ctx->server_recv_cq, 1, &input_wc,
+                          0);
+    received_length = input_wc.byte_len;
+    received_id = input_wc.wr_id;
 
     target_qp = RSEC_ID_TO_QP(received_id);
     target_mr = RSEC_ID_TO_RECV_MR(received_id);
@@ -789,7 +819,7 @@ void *mitsume_con_controller_thread(void *input_arg) {
     struct mitsume_poll *poller_ptr;
     if (send_wr_id) {
       poller_ptr =
-          new struct mitsume_poll(send_wr_id, input_wc[0].wr_id, fake_coro);
+          new struct mitsume_poll(send_wr_id, input_wc.wr_id, fake_coro);
       thread_metadata->poller_queue.push(poller_ptr);
     } else {
       thread_metadata->fake_coro_queue.push(fake_coro);

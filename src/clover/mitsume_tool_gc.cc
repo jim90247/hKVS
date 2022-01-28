@@ -519,20 +519,18 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
   int end_flag = 0;
   long long int target_mr;
   long long int target_qp;
-  int num_of_poll;
   uint64_t wr_id;
   ptr_attr *target_qp_mr_attr;
   int per_thread;
   int per_gc_thread;
   int try_lock;
   replied_message = local_inf->input_space[coro_id];
-  struct ibv_wc input_wc[RSEC_CQ_DEPTH];
+  ibv_wc input_wc[1];
   while (!end_flag) {
-    num_of_poll = userspace_one_poll_wr(local_ctx_clt->ib_ctx->server_recv_cq,
-                                        1, input_wc, 1);
+    userspace_one_poll_wr(local_ctx_clt->ib_ctx->server_recv_cq, 1, input_wc,
+                          1);
     // MITSUME_INFO("get message\n");
     // usleep(MITSUME_GC_CLT_EPOCH_DELAY*1000);
-    assert(num_of_poll == 1);
     received_length = input_wc[0].byte_len;
     received_id = input_wc[0].wr_id;
 
