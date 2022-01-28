@@ -1,5 +1,4 @@
 #include <folly/AtomicHashMap.h>
-#include <gflags/gflags.h>
 
 #include <iostream>
 using AHM = folly::AtomicHashMap<unsigned long, unsigned long>;
