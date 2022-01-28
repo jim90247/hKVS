@@ -989,31 +989,13 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
   while (!end_flag) {
     // remote all kthread_should_stop related functions
     temp_count = 0;
-    if (local_ctx_con->public_gc_bucket[target_gc_thread].empty()) {
-      usleep(MITSUME_GC_CON_SLEEP_TIME);
-      schedule();
-      continue;
+    while (temp_count < MITSUME_GC_CON_PER_PROGRESS) {
+      mitsume_gc_hashed_entry *tmp;
+      if (local_ctx_con->public_gc_bucket[target_gc_thread].try_dequeue(tmp)) {
+        private_entry.push(tmp);
+        temp_count++;
+      }
     }
-
-    // con_controller thread might push item into this queue at the same time.
-    // See mitsume_con_controller_thread_process_gc (called by
-    // mitsume_con_controller_thread).
-    local_ctx_con->gc_bucket_lock[target_gc_thread].lock();
-    if (local_ctx_con->public_gc_bucket[target_gc_thread].empty()) {
-      local_ctx_con->gc_bucket_lock[target_gc_thread].unlock();
-      schedule();
-      continue;
-    }
-
-    while (temp_count < MITSUME_GC_CON_PER_PROGRESS &&
-           !local_ctx_con->public_gc_bucket[target_gc_thread].empty()) {
-      private_entry.push(
-          local_ctx_con->public_gc_bucket[target_gc_thread].front());
-      local_ctx_con->public_gc_bucket[target_gc_thread].pop();
-      temp_count++;
-    }
-
-    local_ctx_con->gc_bucket_lock[target_gc_thread].unlock();
     backup_update_accumulate = 0;
     // MITSUME_GC_MAX_BACK_UPDATE_PER_ENTRY
 
@@ -1246,9 +1228,9 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
     if (processed_cnt >= kReportPerfIter) {
       auto perf_end = clock::now();
       double sec = std::chrono::duration<double>(perf_end - perf_start).count();
-      printf("GC thread %d (%d): %.2f update/sec, %lu pending\n",
+      printf("GC thread %d (%d): %.2f update/sec, %lu pending (approx)\n",
              target_gc_thread, gettid(), processed_cnt / sec,
-             local_ctx_con->public_gc_bucket[target_gc_thread].size());
+             local_ctx_con->public_gc_bucket[target_gc_thread].size_approx());
       perf_start = clock::now();
       processed_cnt = 0;
     }
@@ -1419,21 +1401,16 @@ uint64_t mitsume_con_controller_thread_process_gc(
             // accessor destructs when leaving the block
           }
 
-          thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
-              .lock();
-
           while (!thread_metadata->internal_gc_buffer.empty()) {
             auto entry = thread_metadata->internal_gc_buffer.front();
             thread_metadata->internal_gc_buffer.pop();
             entry->submitted_epoch = MITSUME_GC_SUBMIT_REGULAR;
             thread_metadata->local_ctx_con->public_gc_bucket[target_gc_thread]
-                .push(entry);
+                .enqueue(entry);
           }
           // the last one should be changed into update since it points to the
           // latest table However, the lock is still ocupied by this thread.
           // Therefore it's safe to manipulate the data directly
-          thread_metadata->local_ctx_con->gc_bucket_lock[target_gc_thread]
-              .unlock();
           break;
         }
       }

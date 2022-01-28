@@ -11,7 +11,10 @@ HOTS_HOME := .
 MICA_HOME := ../../mica2/src
 BOOST_HOME := $${HOME}/.local/boost_1_76_0
 
-INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I ${BOOST_HOME}/include
+# add concurrentqueue include path
+CONCURRENTQUEUE_INC := $${HOME}/.local/include/concurrentqueue
+
+INC	:= -I ${HOTS_HOME} -I ${MICA_HOME} -I ${BOOST_HOME}/include -I ${CONCURRENTQUEUE_INC}
 
 ifeq ($(PROFILE),)
 	DEBUG :=

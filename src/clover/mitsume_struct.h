@@ -26,6 +26,8 @@ using namespace boost::coroutines;
 typedef symmetric_coroutine<void>::call_type coro_call_t;
 typedef symmetric_coroutine<void>::yield_type coro_yield_t;
 
+#include <moodycamel/concurrentqueue.h>
+
 enum MITSUME_notify {
   MITSUME_SUCCESS = 0,
   MITSUME_ERROR = -1,
@@ -449,6 +451,8 @@ struct mitsume_controller_epoch_thread_metadata {
   struct mitsume_ctx_con *local_ctx_con;
 };
 
+using PublicGcBucket = moodycamel::ConcurrentQueue<mitsume_gc_hashed_entry *>;
+
 struct mitsume_ctx_con {
   ////////////////////////////
   queue<struct controller_poller *> poller_queue;
@@ -482,9 +486,7 @@ struct mitsume_ctx_con {
   struct mitsume_controller_gc_thread_metadata
       gc_thread_metadata[MITSUME_CON_GC_THREAD_NUMBER];
   pthread_t gc_thread[MITSUME_CON_GC_THREAD_NUMBER];
-  queue<struct mitsume_gc_hashed_entry *>
-      public_gc_bucket[MITSUME_CON_GC_THREAD_NUMBER];
-  mutex gc_bucket_lock[MITSUME_CON_GC_THREAD_NUMBER];
+  PublicGcBucket public_gc_bucket[MITSUME_CON_GC_THREAD_NUMBER];
 
   pthread_t epoch_thread;
   struct mitsume_controller_epoch_thread_metadata epoch_thread_metadata;
