@@ -4,12 +4,14 @@ CXX := g++
 LD := ${CXX}
 
 # Flags to enable link-time optimization and GDB
-LTO := -flto
+#LTO := -flto
 ENABLE_DGB :=
 
 HOTS_HOME := .
 MICA_HOME := ../../mica2/src
 BOOST_HOME := $${HOME}/.local/boost_1_76_0
+
+PKG_CONFIG_LIBS := libfolly fmt gflags libglog libmemcached papi
 
 # add concurrentqueue include path
 CONCURRENTQUEUE_INC := $${HOME}/.local/include/concurrentqueue
@@ -27,10 +29,12 @@ CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++17 ${INC} -Wall -g \
 	-Wno-unused-value \
 	-Wno-unused-function \
 	-Wno-sign-compare \
-	-DBOOST_COROUTINES_NO_DEPRECATION_WARNING
+	-DBOOST_COROUTINES_NO_DEPRECATION_WARNING \
+	$(shell pkg-config --cflags $(PKG_CONFIG_LIBS))
 
-LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lmemcached -lnuma -g \
-	-lpapi -lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic -ltbb
+LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lnuma -g \
+	-lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic \
+	$(shell pkg-config --libs $(PKG_CONFIG_LIBS))
 
 src := ibsetup.o memcached.o \
 	mitsume_macro.o mitsume_util.o \
@@ -51,7 +55,7 @@ src := ibsetup.o memcached.o \
 #${mica_src} : CPPFLAGS += ${MICA_DEBUG}
 
 init: ${src}
-	${LD} -o $@ $^ ${LDFLAGS} ${CPPFLAGS}
+	${LD} -o $@ $^ ${LDFLAGS}
 
 PHONY: clean
 clean:

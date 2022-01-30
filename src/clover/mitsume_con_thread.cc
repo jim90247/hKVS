@@ -1,30 +1,35 @@
 #include "mitsume_con_thread.h"
 
-#include <oneapi/tbb/concurrent_hash_map.h>
+#include <folly/AtomicHashMap.h>
+#include <folly/concurrency/ConcurrentHashMap.h>
+
+constexpr size_t kEstimatedCloverKeys = 100000UL;
 
 using NextGcEntryHashMap =
-    tbb::concurrent_hash_map<mitsume_key, mitsume_gc_hashed_entry *>;
+    folly::AtomicHashMap<mitsume_key, mitsume_gc_hashed_entry *>;
 /**
  * @brief Stores the last garbage collected entry of a key.
  *
  * old_ptr is the last garbage collected entry, and new_ptr is the oldest entry
  * which is not garbage collected yet.
  */
-NextGcEntryHashMap next_gc_entry_map;
+NextGcEntryHashMap next_gc_entry_map(kEstimatedCloverKeys);
 
+// Using ConcurrentHashMap instead of AtomicHashMap because it requires
+// frequent insert/delete.
 using DelayedGcEntryHashMap =
-    tbb::concurrent_hash_map<uintptr_t, mitsume_gc_hashed_entry *>;
+    folly::ConcurrentHashMap<uintptr_t, mitsume_gc_hashed_entry *>;
 /**
  * @brief Stores the entries that should be garbage collected once all of their
  * ancestors are garbage collected.
  * 
  * The key of this table is pointer, not mitsume_key.
  */
-DelayedGcEntryHashMap delayed_gc_entries;
+DelayedGcEntryHashMap delayed_gc_entries(kEstimatedCloverKeys);
 
 using NamerHashMap =
-    tbb::concurrent_hash_map<mitsume_key, mitsume_hash_struct *>;
-NamerHashMap namer_map;
+    folly::AtomicHashMap<mitsume_key, mitsume_hash_struct *>;
+NamerHashMap namer_map(kEstimatedCloverKeys);
 
 inline uint32_t mitsume_con_get_gc_bucket_buffer_hashkey(mitsume_ptr *tar_ptr) {
   return hash_min(tar_ptr->pointer, MITSUME_CON_GC_HASHTABLE_SIZE_BIT);
@@ -321,9 +326,9 @@ uint64_t mitsume_con_controller_thread_reply_entry_request(
  */
 static int mitsume_con_controller_thread_query_namer_table(
     mitsume_key key, struct mitsume_entry_request *ret_ptr) {
-  NamerHashMap::accessor accessor;
-  if (namer_map.find(accessor, key)) {
-    auto search_hash_ptr = accessor->second;
+  auto it = namer_map.find(key);
+  if (it != namer_map.end()) {
+    auto search_hash_ptr = it->second;
     mitsume_struct_copy_ptr_replication(ret_ptr->ptr, search_hash_ptr->ptr,
                                         search_hash_ptr->replication_factor);
     ret_ptr->shortcut_ptr.pointer = search_hash_ptr->shortcut_ptr.pointer;
@@ -437,8 +442,8 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
       current_hash_ptr->shortcut_ptr.pointer = current_shortcut.ptr.pointer;
       bool found;
       {
-        NamerHashMap::const_accessor accessor;
-        found = namer_map.find(accessor, request->key);
+        auto it = namer_map.find(request->key);
+        found = it != namer_map.end();
         if (!found) {
           namer_map.insert(std::make_pair(request->key, current_hash_ptr));
           reply_lh = MITSUME_GET_PTR_LH(current_shortcut.ptr.pointer);
@@ -457,7 +462,6 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
           memcpy(backup_create_request_content, current_hash_ptr,
                  sizeof(struct mitsume_hash_struct));
         }
-        // accessor destructs when leaving this block
       }
       // MITSUME_PRINT("ask %lu lh %lu found %d\n", (long unsigned
       // int)request->key, (long unsigned
@@ -509,8 +513,9 @@ uint64_t mitsume_con_controller_thread_process_entry_request(
         gc_h_entry->gc_entry.key = reply->content.msg_entry_request.key;
         gc_h_entry->gc_entry.replication_factor = request->replication_factor;
 
-        if (!next_gc_entry_map.insert(
-                std::make_pair(gc_h_entry->gc_entry.key, gc_h_entry))) {
+        auto insert_result = next_gc_entry_map.insert(
+            std::make_pair(gc_h_entry->gc_entry.key, gc_h_entry));
+        if (!insert_result.second) {
           MITSUME_PRINT_ERROR("Collision in next_gc_entry_map (key=%lu)\n",
                               gc_h_entry->gc_entry.key);
           MITSUME_TOOL_PRINT_POINTER_KEY_REPLICATION(
@@ -1311,10 +1316,12 @@ uint64_t mitsume_con_controller_thread_process_gc(
     MITSUME_STRUCT_CHECKNULL_PTR_REPLICATION(gc_hash_entry->gc_entry.new_ptr,
                                              replication_factor);
 
-    // R/W access within this for loop
-    NextGcEntryHashMap::accessor gc_entry_accessor;
-    if (next_gc_entry_map.find(gc_entry_accessor, req_key)) {
-      gc_search_ptr = gc_entry_accessor->second;
+    auto it = next_gc_entry_map.find(req_key);
+    if (it != next_gc_entry_map.end()) {
+      // The entry which gc_search_ptr points to won't be accessed by another
+      // thread at the same time, because each controller thread serves
+      // independent set of keys. See mitsume_con_alloc_key_to_controller_id.
+      gc_search_ptr = it->second;
       gc_found = AreContiguousEntries(gc_search_ptr->gc_entry,
                                       gc_hash_entry->gc_entry);
     } else {
@@ -1327,10 +1334,10 @@ uint64_t mitsume_con_controller_thread_process_gc(
        * recorded in next_gc_entry_map has not been garbage collected, the
        * buffer used by this entry cannot be freed yet.
        */
-      bool ok = delayed_gc_entries.insert(std::make_pair(
+      auto insert_result = delayed_gc_entries.insert(std::make_pair(
           gc_hash_entry->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY].pointer,
           gc_hash_entry));
-      if (!ok) {
+      if (!insert_result.second) {
         MITSUME_PRINT_ERROR("Conflicting entry in delayed_gc_entries!\n");
       }
     } else {
@@ -1345,19 +1352,17 @@ uint64_t mitsume_con_controller_thread_process_gc(
         bool link_flag = false;
         gc_search_ptr_buffer = NULL;
         {
-          DelayedGcEntryHashMap::accessor accessor;
-          link_flag = delayed_gc_entries.find(
-              accessor,
+          auto it = delayed_gc_entries.find(
               next_hash_entry->gc_entry.new_ptr[MITSUME_REPLICATION_PRIMARY]
                   .pointer);
+          link_flag = it != delayed_gc_entries.end();
           if (link_flag) {
-            gc_search_ptr_buffer = accessor->second;
+            gc_search_ptr_buffer = it->second;
             if (gc_search_ptr_buffer->gc_entry.key != req_key) {
               MITSUME_PRINT_ERROR("Key mismatch (%lu)\n", req_key);
             }
-            delayed_gc_entries.erase(accessor);
+            delayed_gc_entries.erase(it);
           }
-          // accessor destructs when exiting this block
         }
 
         if (link_flag) {
@@ -1371,6 +1376,9 @@ uint64_t mitsume_con_controller_thread_process_gc(
             MITSUME_PRINT_ERROR("key doesn't match %lu\n", req_key);
           }
           // Update the entry in next_gc_entry_map
+          // The entry which gc_search_ptr points to won't be accessed by
+          // another thread at the same time. Thus, we can safely modify its
+          // content.
           mitsume_struct_copy_ptr_replication(gc_search_ptr->gc_entry.old_ptr,
                                               next_hash_entry->gc_entry.old_ptr,
                                               replication_factor);
@@ -1389,16 +1397,17 @@ uint64_t mitsume_con_controller_thread_process_gc(
 
           // update query table
           {
-            NamerHashMap::accessor accessor;
-            if (namer_map.find(accessor, req_key)) {
-              auto namer_ptr = accessor->second;
+            auto it = namer_map.find(req_key);
+            // The entry which it->second points to won't be accessed by
+            // another thread at the same time. Thus, we can safely modify its
+            // content.
+            if (it != namer_map.end()) {
               mitsume_struct_copy_ptr_replication(
-                  namer_ptr->ptr, gc_search_ptr->gc_entry.new_ptr,
+                  it->second->ptr, gc_search_ptr->gc_entry.new_ptr,
                   replication_factor);
             } else {
               MITSUME_PRINT_ERROR("cannot find %lu in NAMER_TABLE\n", req_key);
             }
-            // accessor destructs when leaving the block
           }
 
           while (!thread_metadata->internal_gc_buffer.empty()) {

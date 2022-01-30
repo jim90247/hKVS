@@ -1,5 +1,5 @@
-find_package(TBB REQUIRED)
 find_package(concurrentqueue REQUIRED)
+find_package(Folly REQUIRED)
 
 set(MITSUME_SRC
   ibsetup.cc
@@ -39,9 +39,9 @@ set(MITSUME_SRC
 )
 
 add_library(mitsume ${MITSUME_SRC})
-target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi boost_system boost_coroutine boost_thread TBB::tbb concurrentqueue::concurrentqueue)
+target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi boost_system boost_coroutine boost_thread concurrentqueue::concurrentqueue Folly::folly)
 # set LTO
-set_property(TARGET mitsume PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
+# set_property(TARGET mitsume PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
 
 set(CLOVER_SRC
   client.h
