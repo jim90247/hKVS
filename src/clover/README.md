@@ -2,6 +2,21 @@
 
 ## Dependencies
 
+### Install each dependency manually
+
+- [boost](https://www.boost.org/users/history/version_1_76_0.html)
+  - Needs only `system` and `coroutine`, but Folly ([see below](#folly-dependencies)) requires additional libraries.
+- [PAPI](http://icl.utk.edu/projects/papi/downloads/papi-6.0.0.tar.gz)
+- [libhugetlbfs](https://github.com/libhugetlbfs/libhugetlbfs/releases/tag/2.23)
+- [memcached](https://github.com/memcached/memcached/releases/tag/1.6.9)
+- [libmemcached](https://launchpad.net/libmemcached/1.0/1.0.18/+download/libmemcached-1.0.18.tar.gz)
+- [numactl](https://github.com/numactl/numactl)
+- [concurrentqueue](https://github.com/jim90247/concurrentqueue)
+  - Use the version I forked from upstream repository
+- Folly: [see below](#folly)
+
+### For CentOS/Fedora
+
 ```bash
 yum install memcached memcached-devel libmemcached libmemcached-devel numactl numactl-devel mbedtls mbedtls-devel glib2 glib2-devel
 yum install glibc-static bzip2 yum-utils python-devel bzip2-devel papi-devel
