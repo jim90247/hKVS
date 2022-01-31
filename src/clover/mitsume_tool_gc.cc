@@ -593,7 +593,7 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
         // drain gc buffer
 
         for (per_gc_thread = 0;
-             per_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
+             per_gc_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
              per_gc_thread++) {
           local_ctx_clt->gc_processing_queue_lock[per_gc_thread].lock();
           /*while(!list_empty(&(local_ctx_clt->gc_processing_queue[per_gc_thread].list)))
@@ -630,7 +630,7 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
           }
         }
         for (per_gc_thread = 0;
-             per_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
+             per_gc_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
              per_gc_thread++) {
           local_ctx_clt->gc_processing_queue_lock[per_gc_thread].unlock();
           /*while(!list_empty(&(local_ctx_clt->gc_processing_queue[per_gc_thread].list)))
