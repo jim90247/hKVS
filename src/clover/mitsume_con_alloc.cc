@@ -348,12 +348,11 @@ uint32_t mitsume_con_alloc_lh_to_node_id_bucket(uint64_t lh) {
 }
 
 /**
- * mitsume_con_alloc_put_entry_into_thread - put an available entry into thread
- * @local_ctx_con: controller context
- * @input_entry: target entry (available entry)
- * @target_thread: target thread
- * @tail: true if insert into tail
- * return: return 0 if success. return -1 if error happens
+ * @brief put an available entry into thread
+ * @param local_ctx_con controller context
+ * @param input_entry target entry (available entry)
+ * @param tail true if insert into tail
+ * @return 0 if success, -1 if error happens
  */
 int mitsume_con_alloc_put_entry_into_thread(
     struct mitsume_ctx_con *local_ctx_con,
@@ -362,25 +361,15 @@ int mitsume_con_alloc_put_entry_into_thread(
       mitsume_con_alloc_pickthread_to_put(local_ctx_con, input_entry);
   int target_list = mitsume_con_alloc_lh_to_list_num(
       MITSUME_GET_PTR_LH(input_entry->ptr.pointer));
-  int target_replication_bucket = mitsume_con_alloc_lh_to_node_id_bucket(
+  int target_bucket = mitsume_con_alloc_lh_to_node_id_bucket(
       MITSUME_GET_PTR_LH(input_entry->ptr.pointer));
-  // struct mitsume_allocator_entry *target_allocator_list =
-  // local_ctx_con->thread_metadata[target_thread].allocator_node_branch[target_replication_bucket];
-  local_ctx_con->thread_metadata[target_thread]
-      .allocator_lock_branch[target_replication_bucket][target_list]
-      .lock();
-  if (tail)
+  if (tail) {
     local_ctx_con->thread_metadata[target_thread]
-        .allocator_node_branch[target_replication_bucket][target_list]
-        .push_back(input_entry->ptr.pointer);
-  else
-    local_ctx_con->thread_metadata[target_thread]
-        .allocator_node_branch[target_replication_bucket][target_list]
-        .push_front(input_entry->ptr.pointer);
-
-  local_ctx_con->thread_metadata[target_thread]
-      .allocator_lock_branch[target_replication_bucket][target_list]
-      .unlock();
+        .allocator_node_branch[target_bucket][target_list]
+        .enqueue(input_entry->ptr.pointer);
+  } else {
+    throw std::runtime_error("Put entry to head of queue is not allowed");
+  }
   return MITSUME_SUCCESS;
 }
 

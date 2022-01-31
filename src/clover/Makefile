@@ -34,7 +34,7 @@ CPPFLAGS := ${ENABLE_DGB} ${LTO} -O2 ${DEBUG} -std=c++17 ${INC} -Wall -g \
 
 LDFLAGS := ${ENABLE_DGB} ${LTO} -O2 -libverbs -lrt -ldl -pthread -lnuma -g \
 	-lboost_system -lboost_coroutine -lboost_thread -L ${BOOST_HOME}/lib -rdynamic \
-	$(shell pkg-config --libs $(PKG_CONFIG_LIBS))
+	$(shell pkg-config --libs $(PKG_CONFIG_LIBS)) -ldouble-conversion
 
 src := ibsetup.o memcached.o \
 	mitsume_macro.o mitsume_util.o \

@@ -26,6 +26,7 @@ using namespace boost::coroutines;
 typedef symmetric_coroutine<void>::call_type coro_call_t;
 typedef symmetric_coroutine<void>::yield_type coro_yield_t;
 
+#include <folly/concurrency/UnboundedQueue.h>
 #include <moodycamel/concurrentqueue.h>
 
 enum MITSUME_notify {
@@ -386,15 +387,14 @@ struct mitsume_poll {
   }
 };
 
+constexpr size_t kGcQueueMaxSize = 200000000;
 struct mitsume_allocator_metadata {
   queue<struct mitsume_poll *> poller_queue;
   queue<int> fake_coro_queue;
-  //%spinlock_t **allocator_lock_branch;
-  mutex allocator_lock_branch[MITSUME_NUM_REPLICATION_BUCKET]
-                             [MITSUME_CON_ALLOCATOR_SLAB_NUMBER];
-  // struct mitsume_allocator_entry **allocator_node_branch;
-  deque<uint64_t> allocator_node_branch[MITSUME_NUM_REPLICATION_BUCKET]
-                                       [MITSUME_CON_ALLOCATOR_SLAB_NUMBER];
+  // Available entries for each replication and slab
+  folly::UMPSCQueue<uint64_t, false>
+      allocator_node_branch[MITSUME_NUM_REPLICATION_BUCKET]
+                           [MITSUME_CON_ALLOCATOR_SLAB_NUMBER];
 
   int port;
   int thread_id;

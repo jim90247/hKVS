@@ -182,31 +182,15 @@ int mitsume_con_alloc_get_entry_from_thread(
     struct mitsume_allocator_entry *new_entry, int size,
     int target_replication_bucket, int request_num) {
   int target_list = mitsume_con_alloc_size_to_list_num(size);
-  int available_count = 0;
-  // struct mitsume_allocator_entry *target_entry;
-  struct mitsume_allocator_entry target_entry;
+  int cnt = 0;
+  uint64_t ptr;
   MITSUME_STAT_ARRAY_ADD(target_replication_bucket, request_num);
-  thread_metadata->allocator_lock_branch[target_replication_bucket][target_list]
-      .lock();
-  while (!(thread_metadata
-               ->allocator_node_branch[target_replication_bucket][target_list]
-               .empty()) &&
-         available_count < request_num) {
-    target_entry.ptr.pointer =
-        thread_metadata
-            ->allocator_node_branch[target_replication_bucket][target_list]
-            .front();
-    // MITSUME_PRINT("%d %p\n", available_count, target_entry);
-    // MITSUME_TOOL_PRINT_POINTER_NULL(&target_entry->ptr);
-    thread_metadata
-        ->allocator_node_branch[target_replication_bucket][target_list]
-        .pop_front();
-    new_entry[available_count].ptr.pointer = target_entry.ptr.pointer;
-    available_count++;
+  auto &q = thread_metadata
+                ->allocator_node_branch[target_replication_bucket][target_list];
+  while (q.try_dequeue(ptr) && cnt < request_num) {
+    new_entry[cnt++].ptr.pointer = ptr;
   }
-  thread_metadata->allocator_lock_branch[target_replication_bucket][target_list]
-      .unlock();
-  return available_count;
+  return cnt;
 }
 
 inline int mitsume_con_controller_thread_pick_replication_bucket(
@@ -1641,7 +1625,7 @@ void *mitsume_con_controller_epoch_thread(void *input_metadata) {
             MITSUME_GET_PTR_LH(ready_to_recycle->gc_entry.old_ptr.pointer), 0,
             MITSUME_ENTRY_MIN_VERSION, 0, 0);
         mitsume_con_alloc_put_entry_into_thread(local_ctx_con, &recycle_entry,
-                                                MITSUME_CON_THREAD_ADD_TO_HEAD);
+                                                MITSUME_CON_THREAD_ADD_TO_TAIL);
         MITSUME_STAT_ADD(MITSUME_STAT_CON_PROCESSED_GC, 1);
         // MITSUME_STAT_ADD(MITSUME_STAT_CON_EPOCHED_GC, 1);
         mitsume_tool_cache_free(ready_to_recycle,
