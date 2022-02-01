@@ -1,7 +1,7 @@
 all: init
 
 CXX ?= g++
-LD ?= ${CXX}
+LD := ${CXX}
 
 # Flags to enable link-time optimization and GDB
 LTO := -flto
