@@ -1,5 +1,7 @@
-
 #include "mitsume_tool_gc.h"
+
+#include <folly/logging/xlog.h>
+
 #include <set>
 
 /**
@@ -377,11 +379,6 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
       gc_thread->local_ctx_clt->gc_processing_queue_lock[gc_thread_id];
 
   // For benchmarking
-#ifdef NDEBUG
-  constexpr bool kReportGcPerf = false;
-#else
-  constexpr bool kReportGcPerf = true;
-#endif
   using clock = std::chrono::steady_clock;
   long process_cnt = 0;
   constexpr long kReportIter = 1000000;
@@ -474,18 +471,14 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
           // SendGcRequest(gc_thread, base_entry[per_controller_idx],
           //               accumulate_gc_num[per_controller_idx],
           //               per_controller_idx + MITSUME_FIRST_ID);
-          if constexpr (kReportGcPerf) {
-            process_cnt += accumulate_gc_num[per_controller_idx];
-            if (process_cnt >= kReportIter) {
-              auto end = clock::now();
-              double sec = std::chrono::duration<double>(end - start).count();
-              printf(
-                  "GC/Shortcut thread %d (%d) %.2f update/s, %lu req pending\n",
-                  gc_thread_id, gettid(), process_cnt / sec,
-                  gc_req_queue.size());
-              process_cnt = 0;
-              start = clock::now();
-            }
+          process_cnt += accumulate_gc_num[per_controller_idx];
+          if (process_cnt >= kReportIter) {
+            auto end = clock::now();
+            double sec = std::chrono::duration<double>(end - start).count();
+            XLOGF(INFO, "GC {}: {:.2f} submit/s, {} in queue",
+                  gc_thread_id, process_cnt / sec, gc_req_queue.size());
+            process_cnt = 0;
+            start = clock::now();
           }
         }
         // MITSUME_STAT_ARRAY_ADD(gc_thread->gc_thread_id, 1);

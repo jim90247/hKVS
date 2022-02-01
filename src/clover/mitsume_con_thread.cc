@@ -2,6 +2,7 @@
 
 #include <folly/AtomicHashMap.h>
 #include <folly/concurrency/ConcurrentHashMap.h>
+#include <folly/logging/xlog.h>
 
 constexpr size_t kEstimatedCloverKeys = 100000UL;
 
@@ -964,15 +965,14 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
   uint32_t target_gc_thread = gc_thread_metadata->gc_thread_id;
   uint32_t old_gc_version;
 
-#ifndef NDEBUG
   using clock = std::chrono::steady_clock;
   auto perf_start = clock::now();
   size_t processed_cnt = 0;
-  constexpr size_t kReportPerfIter = 1000000;
-#endif
+  constexpr size_t kReportPerfIter = 2000000;
 
   MITSUME_INFO("enter gc thread %d\n", gc_thread_metadata->gc_thread_id);
   local_ctx_con = gc_thread_metadata->local_ctx_con;
+  auto& req_queue = local_ctx_con->public_gc_bucket[target_gc_thread];
   mitsume_con_pick_backup_controller(
       gc_thread_metadata->local_ctx_con->controller_id, backup_message_target);
   backup_update_msg =
@@ -984,7 +984,7 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
     temp_count = 0;
     while (temp_count < MITSUME_GC_CON_PER_PROGRESS) {
       mitsume_gc_hashed_entry *tmp;
-      if (local_ctx_con->public_gc_bucket[target_gc_thread].try_dequeue(tmp)) {
+      if (req_queue.try_dequeue(tmp)) {
         private_entry.push(tmp);
         temp_count++;
       }
@@ -1130,9 +1130,9 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
       usleep(expect_delay - real_delay);
     }
 #endif
-#ifndef NDEBUG
+
     processed_cnt += private_entry.size();
-#endif
+
     while (!private_entry.empty()) {
       uint32_t replication_factor;
       uint32_t per_replication;
@@ -1163,13 +1163,8 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
           // into single entry space
           if (MITSUME_GC_MEASURE_TIME_FLAG)
             gc_end_time = get_current_us();
-          if (old_gc_version >=
-              MITSUME_GC_WRAPUP_VERSION) //[TODO] wraping up gc version happens
-                                         //here.
-          {
-            // MITSUME_PRINT("=wrap happen=\n");
-            // MITSUME_TOOL_PRINT_POINTER_NULL(&ready_to_recycle->gc_entry.old_ptr[MITSUME_REPLICATION_PRIMARY]);
-            // MITSUME_PRINT("=============\n");
+          if (old_gc_version >= MITSUME_GC_WRAPUP_VERSION) {
+            // wraping up gc version happens here.
             per_replication_pointer = (struct mitsume_gc_single_hashed_entry *)
                 mitsume_tool_cache_alloc(
                     MITSUME_ALLOCTYPE_GC_SINGLE_HASHED_ENTRY);
@@ -1181,14 +1176,12 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
             local_ctx_con->public_epoch_list_lock.unlock();
             MITSUME_STAT_ADD(MITSUME_STAT_CON_EPOCHED_UNPROCESSED_GC, 1);
           } else {
-            // MITSUME_TOOL_PRINT_POINTER_NULL(&ready_to_recycle->gc_entry.old_ptr[per_replication]);
             struct mitsume_allocator_entry recycle_entry;
             recycle_entry.ptr.pointer = mitsume_struct_set_pointer(
                 MITSUME_GET_PTR_LH(
                     ready_to_recycle->gc_entry.old_ptr[per_replication]
                         .pointer),
                 0, old_gc_version + 1, 0, 0);
-            // MITSUME_TOOL_PRINT_POINTER_NULL(&recycle_entry.ptr);
 
 #ifdef MITSUME_CON_GC_ADD_TO_HEAD
             mitsume_con_alloc_put_entry_into_thread(
@@ -1217,17 +1210,16 @@ void *mitsume_con_controller_gcthread(void *input_metadata) {
       mitsume_tool_cache_free(ready_to_recycle,
                               MITSUME_ALLOCTYPE_GC_HASHED_ENTRY);
     }
-#ifndef NDEBUG
+
     if (processed_cnt >= kReportPerfIter) {
       auto perf_end = clock::now();
       double sec = std::chrono::duration<double>(perf_end - perf_start).count();
-      printf("GC thread %d (%d): %.2f update/sec, %lu pending (approx)\n",
-             target_gc_thread, gettid(), processed_cnt / sec,
-             local_ctx_con->public_gc_bucket[target_gc_thread].size_approx());
+      XLOGF(INFO, "GC {}: {:.2f} entry/s, {} pending", target_gc_thread,
+            processed_cnt / sec, req_queue.size_approx());
       perf_start = clock::now();
       processed_cnt = 0;
     }
-#endif
+
     // schedule();
   }
   MITSUME_INFO("gc thread %d exit\n", gc_thread_metadata->gc_thread_id);

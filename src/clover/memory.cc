@@ -79,12 +79,11 @@ int memory_allocate_shortcut(struct configuration_params *input_arg) {
   assert(shortcut_mr);
   for (per_allocation = start_allocation; per_allocation <= end_allocation;
        per_allocation++) {
-    ptr_attr shortcut_attr = {
-      addr : (uint64_t)shortcut_space +
-          ((per_allocation - start_allocation) * sizeof(mitsume_shortcut)),
-      rkey : shortcut_mr->rkey,
-      machine_id : (short)input_arg->machine_id
-    };
+    ptr_attr shortcut_attr = {.addr = (uint64_t)shortcut_space +
+                                      ((per_allocation - start_allocation) *
+                                       sizeof(mitsume_shortcut)),
+                              .rkey = shortcut_mr->rkey,
+                              .machine_id = (short)input_arg->machine_id};
     memcpy(&output_shortcut_attr[per_allocation - start_allocation],
            &shortcut_attr, sizeof(ptr_attr));
   }
@@ -124,11 +123,9 @@ int memory_allocate_memoryspace(struct configuration_params *input_arg) {
                  (long long int)MITSUME_MEMORY_PER_ALLOCATION_KB * 1024,
                  MITSUME_MR_PERMISSION);
   assert(allocate_mr);
-  ptr_attr allocate_attr = {
-    addr : (uint64_t)allocate_space,
-    rkey : allocate_mr->rkey,
-    machine_id : (short)input_arg->machine_id
-  };
+  ptr_attr allocate_attr = {.addr = (uint64_t)allocate_space,
+                            .rkey = allocate_mr->rkey,
+                            .machine_id = (short)input_arg->machine_id};
   memset(memcached_string, 0, MEMCACHED_MAX_NAME_LEN);
   sprintf(memcached_string, MITSUME_MEMCACHED_MEMORY_ALLOCATION_STRING,
           memory_id);
