@@ -70,6 +70,19 @@ int userspace_one_send(struct ibv_qp *qp, struct ibv_mr *local_mr,
                        int request_size, uint64_t wr_id);
 int userspace_one_poll_wr(struct ibv_cq *cq, int tar_mem,
                           struct ibv_wc *input_wc, int sleep_flag);
+/**
+ * @brief Polls multiple CQs until num_comps WCs are found.
+ * 
+ * Does not update the wr_status table.
+ * 
+ * @param cqs the list of completion queues to poll
+ * @param num_cq the size of CQ list
+ * @param num_comps the number of work completions to look for
+ * @param wc the work completions returned
+ * @param sleep true to sleep between polls
+ */
+void userspace_one_poll_wr(ibv_cq **cqs, int num_cq, int num_comps, ibv_wc *wc,
+                          bool sleep);
 
 ////////////////////////////
 int userspace_one_read(struct ib_inf *ib_ctx, uint64_t wr_id,

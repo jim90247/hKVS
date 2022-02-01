@@ -30,7 +30,8 @@ fi
 source export_local_settings.sh
 source export_experiment_settings.sh
 
-numactl --cpunodebind=0 --membind=0 \
+MLX5_SINGLE_THREADED=1 \
+    numactl --cpunodebind=0 --membind=0 \
     ./init -S 1 -L 2 \
     --machine-id="$1" \
     --base-port-index=$ibdev_base_port --device-id=$ibdev_id \

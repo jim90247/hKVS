@@ -692,6 +692,11 @@ void *mitsume_con_controller_thread(void *input_arg) {
   ptr_attr *target_qp_mr_attr;
   int fake_coro;
 
+  assert(thread_metadata->thread_id < MITSUME_CON_ALLOCATOR_THREAD_NUMBER);
+  // Completion queue to poll for this controller thread
+  ibv_cq *local_recv_cq =
+      local_ctx_con->ib_ctx->server_recv_cqs[thread_metadata->thread_id];
+
   static_assert(MITSUME_CON_ASYNC_MESSAGE_POLL_SIZE <
                 MITSUME_CLT_COROUTINE_NUMBER);
   for (int i = 0; i < MITSUME_CLT_COROUTINE_NUMBER; i++) {
@@ -716,8 +721,7 @@ void *mitsume_con_controller_thread(void *input_arg) {
     thread_metadata->fake_coro_queue.pop();
 
     ibv_wc input_wc;
-    userspace_one_poll_wr(local_ctx_con->ib_ctx->server_recv_cq, 1, &input_wc,
-                          0);
+    userspace_one_poll_wr(local_recv_cq, 1, &input_wc, 0);
     received_length = input_wc.byte_len;
     received_id = input_wc.wr_id;
 

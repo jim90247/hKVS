@@ -527,8 +527,8 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
   replied_message = local_inf->input_space[coro_id];
   ibv_wc input_wc[1];
   while (!end_flag) {
-    userspace_one_poll_wr(local_ctx_clt->ib_ctx->server_recv_cq, 1, input_wc,
-                          1);
+    userspace_one_poll_wr(local_ctx_clt->ib_ctx->server_recv_cqs, 1,
+                          MITSUME_CON_ALLOCATOR_THREAD_NUMBER, input_wc, true);
     // MITSUME_INFO("get message\n");
     // usleep(MITSUME_GC_CLT_EPOCH_DELAY*1000);
     received_length = input_wc[0].byte_len;

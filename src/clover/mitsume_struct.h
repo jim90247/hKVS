@@ -175,7 +175,8 @@ struct ib_inf {
   int num_local_rcqps;
   int num_global_rcqps;
   struct ibv_qp **conn_qp;
-  struct ibv_cq **conn_cq, *server_recv_cq;
+  struct ibv_cq **conn_cq;
+  struct ibv_cq **server_recv_cqs;
   struct ib_qp_attr **all_rcqps;
 
   uint64_t *rcqp_buf;

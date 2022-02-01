@@ -64,8 +64,10 @@
 //#define MITSUME_MAX_REPLICATION 1
 #define MITSUME_REPLICATION_PRIMARY 0
 
-#define MITSUME_CON_GC_THREAD_NUMBER 4
-#define MITSUME_CON_ALLOCATOR_THREAD_NUMBER 4
+// Number of GC threads at metadata server
+constexpr int MITSUME_CON_GC_THREAD_NUMBER = 4;
+// Number of controller threads at metadata server
+constexpr int MITSUME_CON_ALLOCATOR_THREAD_NUMBER = 4;
 #define MITSUME_CON_MESSAGE_PER_POST 128
 
 #define MITSUME_CON_ASYNC_MESSAGE_POLL_SIZE 12

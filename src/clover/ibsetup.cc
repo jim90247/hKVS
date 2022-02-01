@@ -1,5 +1,7 @@
 #include "ibsetup.h"
 
+#include <folly/Random.h>
+
 #include <boost/stacktrace.hpp>
 
 #include "op_counter.h"
@@ -205,8 +207,14 @@ void ib_create_rcqps(struct ib_inf *inf, int role_int) {
   assert(inf->conn_qp != NULL && inf->conn_cq != NULL && inf->pd != NULL &&
          inf->ctx != NULL);
   assert(inf->num_local_rcqps >= 1 && inf->dev_port_id >= 1);
-  inf->server_recv_cq = ibv_create_cq(
-      inf->ctx, RSEC_CQ_DEPTH * inf->num_local_rcqps, NULL, NULL, 0);
+  inf->server_recv_cqs = new ibv_cq*[MITSUME_CON_ALLOCATOR_THREAD_NUMBER];
+  for (i = 0; i < MITSUME_CON_ALLOCATOR_THREAD_NUMBER; i++) {
+    int depth = RSEC_CQ_DEPTH * (inf->num_local_rcqps / MITSUME_CON_ALLOCATOR_THREAD_NUMBER);
+    if (inf->num_local_rcqps % MITSUME_CON_ALLOCATOR_THREAD_NUMBER < i) {
+      depth += RSEC_CQ_DEPTH;
+    }
+    inf->server_recv_cqs[i] = ibv_create_cq(inf->ctx, depth, nullptr, nullptr, 0);
+  }
 
   for (i = 0; i < inf->num_local_rcqps; i++) {
     inf->conn_cq[i] = ibv_create_cq(inf->ctx, RSEC_CQ_DEPTH, NULL, NULL, 0);
@@ -214,7 +222,7 @@ void ib_create_rcqps(struct ib_inf *inf, int role_int) {
     struct ibv_qp_init_attr create_attr;
     memset(&create_attr, 0, sizeof(struct ibv_qp_init_attr));
     create_attr.send_cq = inf->conn_cq[i];
-    create_attr.recv_cq = inf->server_recv_cq;
+    create_attr.recv_cq = inf->server_recv_cqs[i % MITSUME_CON_ALLOCATOR_THREAD_NUMBER];
     // create_attr.recv_cq = inf->conn_cq[i];
     create_attr.qp_type = IBV_QPT_RC;
 
@@ -918,6 +926,39 @@ int userspace_one_poll_wr(struct ibv_cq *cq, int tar_mem,
 {
   hrd_poll_cq(cq, tar_mem, input_wc, sleep_flag);
   return tar_mem;
+}
+
+void userspace_one_poll_wr(ibv_cq **cqs, int num_cq, int num_comps, ibv_wc *wc,
+                          bool sleep) {
+  thread_local static folly::ThreadLocalPRNG rng;
+
+  int acc_comps = 0;
+  int offset = folly::Random::rand32(num_cq, rng);
+  while (true) {
+    for (int i = 0; i < num_cq; i++) {
+      int idx = offset + i;
+      if (idx >= num_cq) {
+        idx -= num_cq;
+      }
+      acc_comps += ibv_poll_cq(cqs[idx], num_comps - acc_comps, &wc[acc_comps]);
+      if (acc_comps == num_comps) {
+        break;
+      }
+    }
+    if (acc_comps == num_comps) {
+      break;
+    }
+    if (sleep) {
+      usleep(MITSUME_POLLING_SLEEP_TIME);
+    }
+  }
+  for (int i = 0; i < num_comps; i++) {
+    if (wc[i].status != IBV_WC_SUCCESS) {
+      fprintf(stderr, "Bad wc status (%d): %s\n", wc[i].status,
+              ibv_wc_status_str(wc[i].status));
+      exit(EXIT_FAILURE);
+    }
+  }
 }
 
 int userspace_refill_used_postrecv(struct ib_inf *ib_ctx,
