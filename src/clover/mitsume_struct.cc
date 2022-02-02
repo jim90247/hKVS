@@ -1,5 +1,7 @@
 #include "mitsume_struct.h"
 
+mitsume_ctx_clt::mitsume_ctx_clt() : gc_processing_block(false) {}
+
 /**
  * mitsume_struct_setup_entry_request: setup entry request format
  * @input: input message pointer

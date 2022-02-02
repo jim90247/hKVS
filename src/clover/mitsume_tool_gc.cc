@@ -63,14 +63,8 @@ int mitsume_tool_gc_submit_request(
   target_gc_thread_id = old_entry->target_gc_thread;
   request->target_controller = old_entry->target_gc_controller;
 
-  // MITSUME_PRINT("submit to %d\n", target_gc_thread_id);
-  thread_metadata->local_ctx_clt->gc_processing_queue_lock[target_gc_thread_id]
-      .lock();
-  thread_metadata->local_ctx_clt->gc_processing_queue[target_gc_thread_id].push(
-      request);
-  thread_metadata->local_ctx_clt->gc_processing_queue_lock[target_gc_thread_id]
-      .unlock();
-  // MITSUME_PRINT("after lock\n");
+  thread_metadata->local_ctx_clt->gc_processing_queue[target_gc_thread_id]
+      .enqueue(request);
 
   return MITSUME_SUCCESS;
 }
@@ -374,19 +368,17 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
   // The queue of GC requests of this GC thread
   auto &gc_req_queue =
       gc_thread->local_ctx_clt->gc_processing_queue[gc_thread_id];
-  // The lock of this thread's GC request queue
-  auto &gc_req_queue_lock =
-      gc_thread->local_ctx_clt->gc_processing_queue_lock[gc_thread_id];
 
   // For benchmarking
   using clock = std::chrono::steady_clock;
   long process_cnt = 0;
-  constexpr long kReportIter = 1000000;
+  constexpr long kReportIter = 2000000;
   auto start = clock::now();
 
   while (!end_flag) {
+    while (gc_thread->local_ctx_clt->gc_processing_block.load())
+      ;
     if (!gc_req_queue.empty()) {
-      gc_req_queue_lock.lock();
       memset(accumulate_gc_num, 0, sizeof(int) * MITSUME_CON_NUM);
       memset(accumulate_shortcut_num, 0, sizeof(int) * MITSUME_CON_NUM);
       accumulate_shortcut_total_num = 0;
@@ -395,7 +387,7 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
                  MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS) {
         // get one entry from list and makesure the total available shortcut
         // number is still below limitation
-        new_request = gc_req_queue.front();
+        gc_req_queue.dequeue(new_request);
         target_controller_idx =
             new_request->target_controller - MITSUME_FIRST_ID;
         // if the next gc requests is already above limitation, abort current
@@ -408,9 +400,6 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
                 MITSUME_CLT_CONSUMER_MAX_SHORTCUT_UPDATE_NUMS) {
           break;
         }
-
-        gc_req_queue.pop();
-        gc_req_queue_lock.unlock();
 
         accumulate_shortcut_total_num++;
         accumulate_shortcut_num[target_controller_idx]++;
@@ -455,9 +444,7 @@ void *mitsume_tool_gc_running_thread(void *input_metadata) {
 
         mitsume_tool_cache_free(new_request,
                                 MITSUME_ALLOCTYPE_GC_THREAD_REQUEST);
-        gc_req_queue_lock.lock();
       }
-      gc_req_queue_lock.unlock();
 
       for (per_controller_idx = 0; per_controller_idx < MITSUME_CON_NUM;
            per_controller_idx++) {
@@ -515,7 +502,6 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
   uint64_t wr_id;
   ptr_attr *target_qp_mr_attr;
   int per_thread;
-  int per_gc_thread;
   int try_lock;
   replied_message = local_inf->input_space[coro_id];
   ibv_wc input_wc[1];
@@ -583,17 +569,8 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
           }
         }
 
-        // drain gc buffer
-
-        for (per_gc_thread = 0;
-             per_gc_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
-             per_gc_thread++) {
-          local_ctx_clt->gc_processing_queue_lock[per_gc_thread].lock();
-          /*while(!list_empty(&(local_ctx_clt->gc_processing_queue[per_gc_thread].list)))
-          {
-              schedule();
-          }*/
-        }
+        // Pause client-side GC threads
+        local_ctx_clt->gc_processing_block.store(true);
 
         replied_message->content.msg_gc_epoch_forward.request_epoch_number =
             local_ctx_clt->gc_current_epoch;
@@ -622,16 +599,8 @@ void *mitsume_tool_gc_epoch_forwarding(void *input_epoch_thread) {
                 .unlock();
           }
         }
-        for (per_gc_thread = 0;
-             per_gc_thread < MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
-             per_gc_thread++) {
-          local_ctx_clt->gc_processing_queue_lock[per_gc_thread].unlock();
-          /*while(!list_empty(&(local_ctx_clt->gc_processing_queue[per_gc_thread].list)))
-          {
-              schedule();
-          }*/
-        }
 
+        local_ctx_clt->gc_processing_block.store(false);
         local_ctx_clt->gc_epoch_block_lock.unlock();
       } break;
       default:

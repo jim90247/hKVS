@@ -630,9 +630,9 @@ struct mitsume_ctx_clt {
 
   struct mitsume_consumer_gc_metadata
       gc_thread_metadata[MITSUME_CLT_CONSUMER_GC_THREAD_NUMS];
-  queue<struct mitsume_gc_thread_request *>
+  folly::UMPSCQueue<mitsume_gc_thread_request *, false>
       gc_processing_queue[MITSUME_CLT_CONSUMER_GC_THREAD_NUMS];
-  mutex gc_processing_queue_lock[MITSUME_CLT_CONSUMER_GC_THREAD_NUMS];
+  std::atomic_bool gc_processing_block;
   pthread_t thread_gc_thread[MITSUME_CLT_CONSUMER_GC_THREAD_NUMS];
   mutex gc_epoch_block_lock;
   pthread_t thread_epoch;
@@ -669,6 +669,7 @@ struct mitsume_ctx_clt {
   // DECLARE_HASHTABLE(MITSUME_TOOL_QUERY_HASHTABLE,
   // MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT); spinlock_t
   // MITSUME_TOOL_QUERY_HASHTABLE_LOCK[1<<MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT];
+  mitsume_ctx_clt();
 };
 #define MITSUME_DANGEROUS_EPOCH                                                \
   (thread_metadata->local_ctx_clt->gc_current_epoch -                          \
