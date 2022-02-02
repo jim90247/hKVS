@@ -1,33 +1,32 @@
 #ifndef RFTL_HEADER_FILE
 #define RFTL_HEADER_FILE
 
+#include <assert.h>
+#include <folly/lang/Bits.h>
+#include <infiniband/verbs.h>
+#include <numa.h>
+#include <pthread.h>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+
+#include <chrono>
+#include <iostream>
+#include <string>
+
 #include "ibsetup.h"
 #include "memcached.h"
 #include "mitsume_macro.h"
 #include "mitsume_parameter.h"
 #include "mitsume_stat.h"
 #include "mitsume_struct.h"
-#include <assert.h>
-#include <infiniband/verbs.h>
-#include <pthread.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
-
-#include <numa.h>
-
-#include <chrono>
-#include <iostream>
-#include <string>
 //#include "rsec.h"
 #define OFFSET (0x0)
 //#include<glib.h>
 
 #include <queue>
 using namespace std;
-
-constexpr bool IsPowerOfTwo(int x) { return x > 0 && (x & (x - 1)) == 0; }
 
 //#define P15_MAXSIZE_PERBLOCK 128
 //#define P15_NUM_METADATA_PERALLOC 1024
@@ -49,9 +48,9 @@ constexpr bool IsPowerOfTwo(int x) { return x > 0 && (x & (x - 1)) == 0; }
 
 #define P15_ID_SHIFT 10
 
-constexpr int P15_PARALLEL_RC_QPS = 16;
+constexpr int P15_PARALLEL_RC_QPS = 32;
 // Ensure that we can use bit mask to determine the QP index of a WR.
-static_assert(IsPowerOfTwo(P15_PARALLEL_RC_QPS));
+static_assert(folly::isPowTwo(static_cast<unsigned int>(P15_PARALLEL_RC_QPS)));
 #define P15_PARALLEL_UD_QPS 1
 #define P15_MAX_INLINE 256
 

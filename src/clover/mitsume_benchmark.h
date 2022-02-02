@@ -24,7 +24,7 @@ const static char MITSUME_YCSB_WORKLOAD_C_STRING[] =
 #define MITSUME_YCSB_MODE_A 50
 #define MITSUME_YCSB_MODE_B 5
 #define MITSUME_YCSB_MODE_C 0
-#define MITSUME_YCSB_OP_MODE MITSUME_YCSB_MODE_A
+#define MITSUME_YCSB_OP_MODE MITSUME_YCSB_MODE_B
 constexpr int MITSUME_YCSB_KEY_RANGE = MITSUME_MAX_KEYS;
 #define MITSUME_YCSB_TEST_TIME 1000000
 #define MITSUME_YCSB_VERIFY_LEVEL 0
@@ -36,7 +36,7 @@ constexpr int MITSUME_YCSB_KEY_RANGE = MITSUME_MAX_KEYS;
 #define MITSUME_TEST_LOAD_READ_NUM 2
 
 // Allocate a queue pair for each benchmark thread
-constexpr int MITSUME_BENCHMARK_THREAD_NUM = 8;
+constexpr int MITSUME_BENCHMARK_THREAD_NUM = 16;
 // Ensure each thread has its own
 // conn_qp to reduce spin locks when accessing IB resources.
 static_assert(MITSUME_BENCHMARK_THREAD_NUM               // consumer thread

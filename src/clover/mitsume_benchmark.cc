@@ -61,6 +61,23 @@ std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
   return filtered;
 }
 
+std::vector<TraceItem> BuildCombinedTrace(int coro_id, const int *op_trace,
+                                          const mitsume_key *key_trace, int n) {
+  assert(op_trace != nullptr);
+  assert(key_trace != nullptr);
+  assert(n >= 0);
+  assert(coro_id >= 1 && coro_id < MITSUME_YCSB_COROUTINE);
+
+  std::vector<TraceItem> trace;
+  for (int i = coro_id - 1; i < n; i += MITSUME_YCSB_COROUTINE - 1) {
+    TraceItem item;
+    item.key = key_trace[i];
+    item.op = op_trace[i];
+    trace.push_back(item);
+  }
+  return trace;
+}
+
 void mitsume_benchmark_slave_func(coro_yield_t &yield,
                                   mitsume_consumer_metadata *thread_metadata,
                                   int coro_id,
@@ -194,7 +211,7 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
   if (thread_metadata->thread_id == 0)
     MITSUME_PRINT("finish barrier\n");
 
-  std::vector<TraceItem> filtered_trace[MITSUME_YCSB_COROUTINE];
+  std::vector<TraceItem> traces[MITSUME_YCSB_COROUTINE];
 
   for (coro_i = 0; coro_i < MITSUME_YCSB_COROUTINE; coro_i++) {
     if (coro_i == MITSUME_MASTER_COROUTINE) {
@@ -203,13 +220,15 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
                            make_tuple(thread_metadata, coro_i, op_key,
                                       target_key, &share_index, &local_op)));
     } else {
-      filtered_trace[coro_i] =
-          FilterCoroKeys(thread_metadata->thread_id, coro_i, op_key, target_key,
-                         MITSUME_YCSB_SIZE);
+      // traces[coro_i] =
+      //     FilterCoroKeys(thread_metadata->thread_id, coro_i, op_key, target_key,
+      //                    MITSUME_YCSB_SIZE);
+      traces[coro_i] =
+          BuildCombinedTrace(coro_i, op_key, target_key, MITSUME_YCSB_SIZE);
       local_inf->coro_queue.push(coro_i);
       local_inf->coro_arr[coro_i] = coro_call_t(
           std::bind(mitsume_benchmark_slave_func, _1, thread_metadata, coro_i,
-                    filtered_trace[coro_i], &local_op));
+                    traces[coro_i], &local_op));
     }
   }
 
