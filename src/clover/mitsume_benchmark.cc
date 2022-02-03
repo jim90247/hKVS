@@ -39,16 +39,26 @@ struct TraceItem {
   int op;
 };
 
-std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
-                                      const int *op_trace,
-                                      const mitsume_key *key_trace, int n) {
+static std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
+                                             const int *op_trace,
+                                             const mitsume_key *key_trace,
+                                             int n) {
   assert(op_trace != nullptr);
   assert(key_trace != nullptr);
   assert(n >= 0);
 
+#if defined(MITSUME_BENCH_FILTER_BY_CORO)
   constexpr int mod =
       MITSUME_BENCHMARK_THREAD_NUM * (MITSUME_YCSB_COROUTINE - 1);
   const int uniq_id = thread_id * (MITSUME_YCSB_COROUTINE - 1) + coro_id - 1;
+#elif defined(MITSUME_BENCH_FILTER_BY_THREAD)
+  constexpr int mod = MITSUME_BENCHMARK_THREAD_NUM;
+  const int uniq_id = thread_id;
+#else
+  // keep all keys
+  constexpr int mod = 1;
+  const int uniq_id = 0;
+#endif
   std::vector<TraceItem> filtered;
   for (int i = 0; i < n; i++) {
     if (key_trace[i] % mod == uniq_id) {
@@ -61,21 +71,21 @@ std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
   return filtered;
 }
 
-std::vector<TraceItem> BuildCombinedTrace(int coro_id, const int *op_trace,
-                                          const mitsume_key *key_trace, int n) {
-  assert(op_trace != nullptr);
-  assert(key_trace != nullptr);
-  assert(n >= 0);
-  assert(coro_id >= 1 && coro_id < MITSUME_YCSB_COROUTINE);
-
-  std::vector<TraceItem> trace;
-  for (int i = coro_id - 1; i < n; i += MITSUME_YCSB_COROUTINE - 1) {
-    TraceItem item;
-    item.key = key_trace[i];
-    item.op = op_trace[i];
-    trace.push_back(item);
+static size_t NextTraceIdx(const size_t cur_idx, const size_t trace_size) {
+#if defined(MITSUME_BENCH_FILTER_BY_CORO)
+  auto ret = cur_idx + 1;
+  if (ret >= trace_size) {
+    ret = 0;
   }
-  return trace;
+  return ret;
+#else
+  thread_local static size_t thread_idx = -1;
+  ++thread_idx;
+  if (thread_idx >= trace_size) {
+    thread_idx = 0;
+  }
+  return thread_idx;
+#endif
 }
 
 void mitsume_benchmark_slave_func(coro_yield_t &yield,
@@ -111,9 +121,7 @@ void mitsume_benchmark_slave_func(coro_yield_t &yield,
     if (ret != MITSUME_SUCCESS) {
       MITSUME_INFO("error %lu %d\n", item.key, ret);
     }
-    if (++trace_idx == trace.size()) {
-      trace_idx = 0;
-    }
+    trace_idx = NextTraceIdx(trace_idx, trace.size());
     *local_op = *local_op + 1;
   }
 }
@@ -220,11 +228,8 @@ void *mitsume_benchmark_coroutine(void *input_metadata) {
                            make_tuple(thread_metadata, coro_i, op_key,
                                       target_key, &share_index, &local_op)));
     } else {
-      // traces[coro_i] =
-      //     FilterCoroKeys(thread_metadata->thread_id, coro_i, op_key, target_key,
-      //                    MITSUME_YCSB_SIZE);
-      traces[coro_i] =
-          BuildCombinedTrace(coro_i, op_key, target_key, MITSUME_YCSB_SIZE);
+      traces[coro_i] = FilterCoroKeys(thread_metadata->thread_id, coro_i,
+                                      op_key, target_key, MITSUME_YCSB_SIZE);
       local_inf->coro_queue.push(coro_i);
       local_inf->coro_arr[coro_i] = coro_call_t(
           std::bind(mitsume_benchmark_slave_func, _1, thread_metadata, coro_i,
