@@ -47,11 +47,11 @@ static std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
   assert(key_trace != nullptr);
   assert(n >= 0);
 
-#if defined(MITSUME_BENCH_FILTER_BY_CORO)
+#if defined(MITSUME_TOOL_FILTER_BY_CORO)
   constexpr int mod =
       MITSUME_BENCHMARK_THREAD_NUM * (MITSUME_YCSB_COROUTINE - 1);
   const int uniq_id = thread_id * (MITSUME_YCSB_COROUTINE - 1) + coro_id - 1;
-#elif defined(MITSUME_BENCH_FILTER_BY_THREAD)
+#elif defined(MITSUME_TOOL_FILTER_BY_THREAD)
   constexpr int mod = MITSUME_BENCHMARK_THREAD_NUM;
   const int uniq_id = thread_id;
 #else
@@ -72,7 +72,7 @@ static std::vector<TraceItem> FilterCoroKeys(int thread_id, int coro_id,
 }
 
 static size_t NextTraceIdx(const size_t cur_idx, const size_t trace_size) {
-#if defined(MITSUME_BENCH_FILTER_BY_CORO)
+#if defined(MITSUME_TOOL_FILTER_BY_CORO)
   auto ret = cur_idx + 1;
   if (ret >= trace_size) {
     ret = 0;

@@ -19,16 +19,6 @@ const static char MITSUME_YCSB_WORKLOAD_B_STRING[] =
 const static char MITSUME_YCSB_WORKLOAD_C_STRING[] =
     "workload/ycsb/workloadc_%d";
 
-// Let each consumer thread handles different sets of keys. This is possible at
-// real-world clients since we may offload different open/read/write requests to
-// different worker threads.
-#define MITSUME_BENCH_FILTER_BY_THREAD
-
-// Let each consumer coroutine handles different sets of keys. Prevents the case
-// that two coroutines chasing for the same key at the same time. Yields the
-// best performance.
-// #define MITSUME_BENCH_FILTER_BY_CORO
-
 #define MITSUME_BENCHMARK_WORKLOAD_NAME_LEN 256
 #define MITSUME_YCSB_SIZE 1000000
 #define MITSUME_YCSB_MODE_A 50

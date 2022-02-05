@@ -7,6 +7,16 @@
 #include "mitsume_tool_gc.h"
 #include "third_party_lru.h"
 
+// Let each consumer thread handles different sets of keys. This is possible at
+// real-world clients since we may offload different open/read/write requests to
+// different worker threads.
+#define MITSUME_TOOL_FILTER_BY_THREAD
+
+// Let each consumer coroutine handles different sets of keys. Prevents the case
+// that two coroutines chasing for the same key at the same time. Yields the
+// best performance.
+// #define MITSUME_TOOL_FILTER_BY_CORO
+
 #define MITSUME_TOOL_TESTSIZE 256
 #define MITSUME_TOOL_QUERY_FORCE_LOCAL 0x1
 #define MITSUME_TOOL_QUERY_FORCE_REMOTE 0x2

@@ -1,12 +1,58 @@
 
 #include "mitsume_tool.h"
 
-int status_check = 0;
-mutex
-    MITSUME_TOOL_QUERY_HASHTABLE_LOCK[1
-                                      << MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT];
-std::unordered_map<mitsume_key, struct mitsume_hash_struct *>
-    MITSUME_TOOL_QUERY_HASHTABLE[1 << MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT];
+#include <folly/concurrency/ConcurrentHashMap.h>
+#include <folly/container/F14Map.h>
+
+#if defined(MITSUME_TOOL_FILTER_BY_THREAD) || \
+    defined(MITSUME_TOOL_FILTER_BY_CORO)
+using QueryHashMap =
+    folly::ConcurrentHashMap<mitsume_key, mitsume_hash_struct *>;
+#else
+using QueryHashMap = std::unordered_map<mitsume_key, mitsume_hash_struct *>;
+#endif
+
+class QueryHashMapAccessor {
+ public:
+  QueryHashMapAccessor(mitsume_key key);
+  ~QueryHashMapAccessor();
+  QueryHashMapAccessor(const QueryHashMapAccessor &) = delete;
+  QueryHashMapAccessor &operator=(const QueryHashMapAccessor &) = delete;
+  QueryHashMap &GetHashMap();
+
+ private:
+  [[maybe_unused]] const uint32_t bucket_;
+};
+
+#if defined(MITSUME_TOOL_FILTER_BY_THREAD) || \
+    defined(MITSUME_TOOL_FILTER_BY_CORO)
+
+static QueryHashMap cncr_hashmap(kEstimatedCloverKeys);
+
+QueryHashMapAccessor::QueryHashMapAccessor(mitsume_key key) : bucket_(0) {}
+
+QueryHashMapAccessor::~QueryHashMapAccessor() {}
+
+QueryHashMap &QueryHashMapAccessor::GetHashMap() { return cncr_hashmap; }
+#else
+constexpr size_t num_hashmap = 1 << MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT;
+static std::mutex submap_locks[num_hashmap];
+static QueryHashMap submaps[num_hashmap];
+
+QueryHashMapAccessor::QueryHashMapAccessor(mitsume_key key)
+    : bucket_(hash_min(key, MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT)) {
+  submap_locks[bucket_].lock();
+}
+
+QueryHashMapAccessor::~QueryHashMapAccessor() {
+  submap_locks[bucket_].unlock();
+}
+
+QueryHashMap &QueryHashMapAccessor::GetHashMap() {
+  return submaps[bucket_];
+}
+#endif
+
 // cache::lru_cache<mitsume_key, int>
 // MITSUME_TOOL_SHARE_LRU_CACHE[1<<MITSUME_LRU_BUCKET_BIT];
 queue<mitsume_key> MITSUME_TOOL_SHARE_FIFO_QUEUE[1 << MITSUME_LRU_BUCKET_BIT];
@@ -129,17 +175,18 @@ uint64_t mitsume_tool_get_crc(struct mitsume_ptr *header_ptr,
 }
 
 /**
- * mitsume_tool_local_hashtable_operations: modify local hashtable (query usage)
- * @thread_metadata: thread metadata
- * @key: query key
- * @input: input hash-entry content (communication usage)
- *      - if the input is query, it should change next to entry before modify
- * hashtable
- *      - if the input is newspace, use it directly (since newspace's entry is
- * already on correct location)
- * @current_hash_ptr: for input usage
- * @operation_flag: MITSUME_CHECK_OR_ADD | MITSUME_CHECK_ONLY | MITSUME_MODIFY
- * return: return a result after operation
+ * @brief Modifies local hashtable (query usage).
+ *
+ * @param thread_metadata thread metadata
+ * @param key query key
+ * @param input input hash-entry content (communication usage). If the input is
+ * query, it should change next to entry before modify hashtable. If the input
+ * is newspace, use it directly (since newspace's entry is already on correct
+ * location).
+ * @param current_hash_ptr: for input usage
+ * @param operation_flag: MITSUME_CHECK_OR_ADD | MITSUME_CHECK_ONLY |
+ * MITSUME_MODIFY
+ * @return 1 if found, 0 if not found
  */
 int mitsume_tool_local_hashtable_operations(
     struct mitsume_consumer_metadata *thread_metadata, mitsume_key key,
@@ -147,24 +194,24 @@ int mitsume_tool_local_hashtable_operations(
     struct mitsume_hash_struct *current_hash_ptr, int operation_flag) {
   struct mitsume_hash_struct *search_hash_ptr;
   // struct hlist_node *temp_hash_ptr;
-  int found_result = 0;
-  int bucket = hash_min(key, MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT);
+  int found = 0;
   struct mitsume_hash_struct *new_entry = NULL;
   int per_replication;
 
-  MITSUME_TOOL_QUERY_HASHTABLE_LOCK[bucket].lock();
+  QueryHashMapAccessor accessor(key);
+  auto &hashmap = accessor.GetHashMap();
 
-  if (MITSUME_TOOL_QUERY_HASHTABLE[bucket].find(key) ==
-      MITSUME_TOOL_QUERY_HASHTABLE[bucket].end())
-    found_result = 0;
-  else {
-    found_result = 1;
-    search_hash_ptr = MITSUME_TOOL_QUERY_HASHTABLE[bucket][key];
+  auto it = hashmap.find(key);
+  if (it == hashmap.end()) {
+    found = 0;
+  } else {
+    found = 1;
+    search_hash_ptr = it->second;
   }
 
-  if (found_result) // If found, either do modification on hashed table content
-                    // or do modification on return object
-  {
+  if (found) {
+    // If found, either do modification on hashed table content or do
+    // modification on return object
     switch (operation_flag) {
     case MITSUME_CHECK_ONLY:
     case MITSUME_CHECK_OR_ADD:
@@ -177,8 +224,8 @@ int mitsume_tool_local_hashtable_operations(
       if (search_hash_ptr->last_epoch < MITSUME_DANGEROUS_EPOCH)
 #endif
       {
-        found_result = 0;
-        MITSUME_TOOL_QUERY_HASHTABLE[bucket].erase(key);
+        found = 0;
+        hashmap.erase(it);
         mitsume_tool_cache_free(search_hash_ptr, MITSUME_ALLOCTYPE_HASH_STRUCT);
       } else {
         mitsume_struct_copy_ptr_replication(
@@ -201,10 +248,6 @@ int mitsume_tool_local_hashtable_operations(
       break;
     case MITSUME_MODIFY:
     case MITSUME_MODIFY_OR_ADD:
-      // MITSUME_TOOL_PRINT_POINTER_KEY_REPLICATION(&input->ptr,
-      // input->replication_factor, key);
-      // MITSUME_TOOL_PRINT_POINTER_KEY_REPLICATION(&search_hash_ptr->ptr[MITSUME_REPLICATION_PRIMARY],
-      // search_hash_ptr->replication_factor, key);
 
       //[CAREFUL] that all hashtable metadata should not incllude xact-area
       //related information search_hash_ptr->ptr.pointer =
@@ -227,9 +270,8 @@ int mitsume_tool_local_hashtable_operations(
 #endif
       break;
     }
-  } else if (!found_result) // if not found, insert the memory space into
-                            // required hashtable
-  {
+  } else if (!found) {
+    // if not found, insert the memory space into required hashtable
     if (operation_flag == MITSUME_CHECK_OR_ADD ||
         operation_flag == MITSUME_MODIFY_OR_ADD) {
       new_entry = (struct mitsume_hash_struct *)mitsume_tool_cache_alloc(
@@ -258,8 +300,6 @@ int mitsume_tool_local_hashtable_operations(
             mitsume_con_alloc_key_to_controller_id(current_hash_ptr->key);
       } else {
         new_entry->key = key;
-        // new_entry->ptr.pointer =
-        // input->ptr.pointer&(~MITSUME_PTR_MASK_XACT_AREA);
         for (per_replication = 0; per_replication < input->replication_factor;
              per_replication++) {
           new_entry->ptr[per_replication].pointer =
@@ -284,9 +324,9 @@ int mitsume_tool_local_hashtable_operations(
         int old_bucket =
             hash_min(old_key, MITSUME_TOOL_QUERY_HASHTABLE_SIZE_BIT);
         MITSUME_TOOL_SHARE_FIFO_QUEUE[lru_target].pop();
-        MITSUME_TOOL_QUERY_HASHTABLE_LOCK[old_bucket].lock();
-        MITSUME_TOOL_QUERY_HASHTABLE[old_bucket][old_key]->in_lru = 0;
-        MITSUME_TOOL_QUERY_HASHTABLE_LOCK[old_bucket].unlock();
+        QueryHashMapAccessor accessor_old(old_key);
+        auto& hashmap_old = accessor_old.GetHashMap();
+        hashmap_old[old_key]->in_lru = 0;
       }
       MITSUME_TOOL_SHARE_FIFO_QUEUE_LOCK[lru_target].unlock();
       new_entry->in_lru = 1;
@@ -299,8 +339,7 @@ int mitsume_tool_local_hashtable_operations(
     switch (operation_flag) {
     case MITSUME_CHECK_OR_ADD:
     case MITSUME_MODIFY_OR_ADD:
-      // hash_add(MITSUME_TOOL_QUERY_HASHTABLE, &new_entry->hlist, key);
-      MITSUME_TOOL_QUERY_HASHTABLE[bucket][key] = new_entry;
+      hashmap.insert(std::make_pair(key, new_entry));
 
       input->ptr.pointer = new_entry->ptr[MITSUME_REPLICATION_PRIMARY]
                                .pointer; // this value is already created at the
@@ -324,8 +363,7 @@ int mitsume_tool_local_hashtable_operations(
 #endif
     }
   }
-  MITSUME_TOOL_QUERY_HASHTABLE_LOCK[bucket].unlock();
-  return found_result;
+  return found;
 }
 
 /**
@@ -1264,7 +1302,6 @@ int mitsume_tool_read(struct mitsume_consumer_metadata *thread_metadata,
   UNUSED(checking_data);
   UNUSED(internal_sge_ptr);
 
-  // MITSUME_PRINT("status check %d\n", status_check++);
   mitsume_tool_begin(thread_metadata, coro_id, yield);
 
   // MITSUME_STAT_ADD(MITSUME_STAT_CLT_READ, 1);

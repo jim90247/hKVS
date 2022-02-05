@@ -4,8 +4,6 @@
 #include <folly/concurrency/ConcurrentHashMap.h>
 #include <folly/logging/xlog.h>
 
-constexpr size_t kEstimatedCloverKeys = 100000UL;
-
 using NextGcEntryHashMap =
     folly::AtomicHashMap<mitsume_key, mitsume_gc_hashed_entry *>;
 /**

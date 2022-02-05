@@ -176,4 +176,6 @@ constexpr bool kAskEntryAsync = false;
 //#define MITSUME_WRITE_OPT_DISABLE_LOCAL_CACHE_UPDATE
 #define MITSUME_GC_SLEEP_TWO_RTT
 
+constexpr size_t kEstimatedCloverKeys = 100000UL;
+
 #endif
