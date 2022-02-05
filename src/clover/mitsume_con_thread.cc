@@ -1300,7 +1300,11 @@ uint64_t mitsume_con_controller_thread_process_gc(
     if (it != next_gc_entry_map.end()) {
       // The entry which gc_search_ptr points to won't be accessed by another
       // thread at the same time, because each controller thread serves
-      // independent set of keys. See mitsume_con_alloc_key_to_controller_id.
+      // independent set of keys. Consumers enqueue requests of different keys
+      // to different client-side GC threads
+      // (mitsume_con_alloc_gc_key_to_gc_thread), which in turn submit these
+      // requests to different controller threads (they receive requests from
+      // different recv_cq).
       gc_search_ptr = it->second;
       gc_found = AreContiguousEntries(gc_search_ptr->gc_entry,
                                       gc_hash_entry->gc_entry);
