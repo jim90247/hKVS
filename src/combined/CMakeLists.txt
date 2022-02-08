@@ -8,7 +8,7 @@ set(COMBINED_COMMON_LIB
   clover_wrapper
 )
 
-add_library(combined_clover_worker clover_worker.h clover_worker.cc)
+add_library(combined_clover_worker clover_worker.h clover_worker.cc req_submitter.h req_submitter.cc)
 target_link_libraries(combined_clover_worker ${COMBINED_COMMON_LIB} concurrentqueue::concurrentqueue)
 
 add_executable(combined_worker worker.cc herd_main.h)
