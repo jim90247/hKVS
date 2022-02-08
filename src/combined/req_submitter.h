@@ -32,7 +32,13 @@ class CloverRequestQueueHandler {
   CloverReqSubmitError TrySubmitWrite(mitsume_key key, CloverRequestType op,
                                       void* val, unsigned int len);
   void Flush();
-  void ReclaimSlot(CloverRequestIdType req_id);
+  /**
+   * @brief Marks the slots corresponding to the repesentative request id as
+   * unused.
+   *
+   * @param rep_id representative request id
+   */
+  void ReclaimSlot(CloverRequestIdType rep_id);
 
  private:
   SharedRequestQueuePtr req_queue_ptr_;
@@ -45,6 +51,7 @@ class CloverRequestQueueHandler {
   std::vector<FreeSlot> reqid_to_slot_;
   std::vector<CloverRequest> req_buf_;
   unsigned int next_reqid_;
+  std::vector<std::vector<CloverRequestIdType>> reclaim_lists_;
 
   CloverReqSubmitError TrySubmit(mitsume_key key, CloverRequestType op,
                                  void* val, unsigned int len);

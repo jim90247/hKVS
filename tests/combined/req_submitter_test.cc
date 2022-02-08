@@ -6,6 +6,7 @@ TEST_CASE("Clover request queue handler (small concurrency)",
           "[req_submitter]") {
   constexpr int kThreadId = 0;
   constexpr int kCncr = 2;
+  constexpr unsigned int kFlushCutoff = kCncr;
   constexpr size_t kWBufSize = 1024;
   constexpr size_t kQueueSize = 1000;
   char wbuf[kWBufSize] = {'\0'};
@@ -43,8 +44,6 @@ TEST_CASE("Clover request queue handler (small concurrency)",
   }
 
   SECTION("Auto flush") {
-    constexpr unsigned int kFlushCutoff = kCncr;
-
     for (unsigned int i = 0; i < kFlushCutoff - 1; i++) {
       handler.TrySubmitRead(i, CloverRequestType::kRead);
     }
@@ -66,7 +65,19 @@ TEST_CASE("Clover request queue handler (small concurrency)",
   SECTION("Reclaim") {
     for (unsigned int i = 0; i < kCncr; i++) {
       handler.TrySubmitRead(i, CloverRequestType::kRead);
-      handler.ReclaimSlot(i % kCncr);
+      handler.ReclaimSlot(i);
+    }
+    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+
+    REQUIRE(err == kSuccess);
+  }
+
+  SECTION("Reclaim (only representative request)") {
+    for (unsigned int i = 0; i < kCncr; i++) {
+      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      if (i % kFlushCutoff == kFlushCutoff - 1) {
+        handler.ReclaimSlot(i);
+      }
     }
     auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
 
@@ -78,6 +89,8 @@ TEST_CASE("Clover request queue handler (large concurrency)",
           "[req_submitter]") {
   constexpr int kThreadId = 0;
   constexpr int kCncr = 128;
+  constexpr unsigned int kFlushCutoff =
+      CloverRequestQueueHandler::kInternalMaxBatch;
   constexpr size_t kWBufSize = 1024;
   constexpr size_t kQueueSize = 1000;
   char wbuf[kWBufSize] = {'\0'};
@@ -116,8 +129,6 @@ TEST_CASE("Clover request queue handler (large concurrency)",
 
   SECTION("Auto flush") {
     static_assert(kCncr > CloverRequestQueueHandler::kInternalMaxBatch);
-    constexpr unsigned int kFlushCutoff =
-        CloverRequestQueueHandler::kInternalMaxBatch;
 
     for (unsigned int i = 0; i < kFlushCutoff - 1; i++) {
       handler.TrySubmitRead(i, CloverRequestType::kRead);
@@ -140,7 +151,19 @@ TEST_CASE("Clover request queue handler (large concurrency)",
   SECTION("Reclaim") {
     for (unsigned int i = 0; i < kCncr; i++) {
       handler.TrySubmitRead(i, CloverRequestType::kRead);
-      handler.ReclaimSlot(i % kCncr);
+      handler.ReclaimSlot(i);
+    }
+    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+
+    REQUIRE(err == kSuccess);
+  }
+
+  SECTION("Reclaim (only representative request)") {
+    for (unsigned int i = 0; i < kCncr; i++) {
+      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      if (i % kFlushCutoff == kFlushCutoff - 1) {
+        handler.ReclaimSlot(i);
+      }
     }
     auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
 

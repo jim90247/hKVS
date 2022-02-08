@@ -16,6 +16,7 @@ CloverRequestQueueHandler::CloverRequestQueueHandler(
     slot.in_use = false;
     reqid_to_slot_.push_back(slot);
   }
+  reclaim_lists_.resize(max_cncr_reqs_);
   next_reqid_ = 0;
 }
 
@@ -50,7 +51,7 @@ CloverReqSubmitError CloverRequestQueueHandler::TrySubmit(mitsume_key key,
   req.key = key;
   req.len = len;
   req.op = op;
-  req.reply_opt = CloverReplyOption::kAlways;
+  req.reply_opt = CloverReplyOption::kOnFailure;
   req_buf_.push_back(req);
   reqid_to_slot_[next_reqid_].in_use = true;
 
@@ -66,15 +67,30 @@ CloverReqSubmitError CloverRequestQueueHandler::TrySubmit(mitsume_key key,
 }
 
 void CloverRequestQueueHandler::Flush() {
+  if (req_buf_.empty()) {
+    return;
+  }
+  req_buf_.back().reply_opt = CloverReplyOption::kAlways;
+
   auto ok = req_queue_ptr_->try_enqueue_bulk(ptok_, req_buf_.begin(),
                                              req_buf_.size());
   if (!ok) {
     throw std::runtime_error("try_enqueue failed");
   }
+
+  auto& reclaim_list = reclaim_lists_[req_buf_.back().id];
+  for (auto& req : req_buf_) {
+    reclaim_list.push_back(req.id);
+  }
+
   req_buf_.clear();
 }
 
-void CloverRequestQueueHandler::ReclaimSlot(CloverRequestIdType req_id) {
-  reqid_to_slot_[req_id].in_use = false;
+void CloverRequestQueueHandler::ReclaimSlot(CloverRequestIdType rep_id) {
+  for (auto rec_id : reclaim_lists_[rep_id]) {
+    reqid_to_slot_[rec_id].in_use = false;
+  }
+  reclaim_lists_[rep_id].clear();
 }
+
 
