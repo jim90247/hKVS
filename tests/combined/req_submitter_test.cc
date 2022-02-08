@@ -16,7 +16,7 @@ TEST_CASE("Clover request queue handler (small concurrency)",
   SECTION("Enqueue one read") {
     mitsume_key key = 1;
 
-    auto err = handler.TrySubmitRead(key, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(key);
     handler.Flush();
 
     REQUIRE(err == kSuccess);
@@ -45,41 +45,41 @@ TEST_CASE("Clover request queue handler (small concurrency)",
 
   SECTION("Auto flush") {
     for (unsigned int i = 0; i < kFlushCutoff - 1; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
     }
     REQUIRE(req_queue_ptr->size_approx() == 0);  // not flushed yet
 
-    handler.TrySubmitRead(kFlushCutoff - 1, CloverRequestType::kRead);
+    handler.TrySubmitRead(kFlushCutoff - 1);
     REQUIRE(req_queue_ptr->size_approx() == kFlushCutoff);
   }
 
   SECTION("Too many requests") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kTooManyReqs);
   }
 
   SECTION("Reclaim") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
       handler.ReclaimSlot(i);
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kSuccess);
   }
 
   SECTION("Reclaim (only representative request)") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
       if (i % kFlushCutoff == kFlushCutoff - 1) {
         handler.ReclaimSlot(i);
       }
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kSuccess);
   }
@@ -100,7 +100,7 @@ TEST_CASE("Clover request queue handler (large concurrency)",
   SECTION("Enqueue one read") {
     mitsume_key key = 1;
 
-    auto err = handler.TrySubmitRead(key, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(key);
     handler.Flush();
 
     REQUIRE(err == kSuccess);
@@ -131,41 +131,41 @@ TEST_CASE("Clover request queue handler (large concurrency)",
     static_assert(kCncr > CloverRequestQueueHandler::kInternalMaxBatch);
 
     for (unsigned int i = 0; i < kFlushCutoff - 1; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
     }
     REQUIRE(req_queue_ptr->size_approx() == 0);  // not flushed yet
 
-    handler.TrySubmitRead(kFlushCutoff - 1, CloverRequestType::kRead);
+    handler.TrySubmitRead(kFlushCutoff - 1);
     REQUIRE(req_queue_ptr->size_approx() == kFlushCutoff);
   }
 
   SECTION("Too many requests") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kTooManyReqs);
   }
 
   SECTION("Reclaim") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
       handler.ReclaimSlot(i);
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kSuccess);
   }
 
   SECTION("Reclaim (only representative request)") {
     for (unsigned int i = 0; i < kCncr; i++) {
-      handler.TrySubmitRead(i, CloverRequestType::kRead);
+      handler.TrySubmitRead(i);
       if (i % kFlushCutoff == kFlushCutoff - 1) {
         handler.ReclaimSlot(i);
       }
     }
-    auto err = handler.TrySubmitRead(kCncr, CloverRequestType::kRead);
+    auto err = handler.TrySubmitRead(kCncr);
 
     REQUIRE(err == kSuccess);
   }

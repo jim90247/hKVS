@@ -24,12 +24,12 @@ CloverRequestQueueHandler::~CloverRequestQueueHandler() {
   delete[] read_buf_base_addr_;
 }
 
-CloverReqSubmitError CloverRequestQueueHandler::TrySubmitRead(
-    mitsume_key key, CloverRequestType op) {
+CloverReqSubmitError CloverRequestQueueHandler::TrySubmitRead(mitsume_key key) {
   if (reqid_to_slot_[next_reqid_].in_use) {
     return kTooManyReqs;
   }
-  return TrySubmit(key, op, reqid_to_slot_[next_reqid_].addr, kReadBufLen);
+  return TrySubmit(key, CloverRequestType::kRead,
+                   reqid_to_slot_[next_reqid_].addr, kReadBufLen);
 }
 
 CloverReqSubmitError CloverRequestQueueHandler::TrySubmitWrite(

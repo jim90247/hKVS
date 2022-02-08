@@ -28,7 +28,7 @@ class CloverRequestQueueHandler {
   CloverRequestQueueHandler(SharedRequestQueuePtr req_queue_ptr,
                             unsigned int concurrent_reqs, int thread_id);
   ~CloverRequestQueueHandler();
-  CloverReqSubmitError TrySubmitRead(mitsume_key key, CloverRequestType op);
+  CloverReqSubmitError TrySubmitRead(mitsume_key key);
   CloverReqSubmitError TrySubmitWrite(mitsume_key key, CloverRequestType op,
                                       void* val, unsigned int len);
   void Flush();
