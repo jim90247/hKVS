@@ -10,7 +10,7 @@
 // Let each consumer thread handles different sets of keys. This is possible at
 // real-world clients since we may offload different open/read/write requests to
 // different worker threads.
-#define MITSUME_TOOL_FILTER_BY_THREAD
+// #define MITSUME_TOOL_FILTER_BY_THREAD
 
 // Let each consumer coroutine handles different sets of keys. Prevents the case
 // that two coroutines chasing for the same key at the same time. Yields the

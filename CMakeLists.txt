@@ -3,6 +3,7 @@ project(kvs VERSION 0.1)
 
 option(BUILD_TESTING "Build unit tests" OFF)
 option(DEBUG "Build in debug mode" OFF)
+option(CLOVER_SPLIT_KEYS "Let each Clover consumer process different keys" OFF)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
@@ -14,6 +15,10 @@ add_compile_options(-Wall -Wextra)
 
 if (NOT DEBUG)
   add_compile_definitions(NDEBUG)
+endif()
+
+if (CLOVER_SPLIT_KEYS)
+  add_compile_definitions(MITSUME_TOOL_FILTER_BY_THREAD)
 endif()
 
 set(CMAKE_INSTALL_PREFIX ${PROJECT_SOURCE_DIR})
