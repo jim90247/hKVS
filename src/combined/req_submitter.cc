@@ -114,7 +114,7 @@ void CloverRequestQueueHandler::ReclaimSlot(CloverRequestIdType rep_id) {
 
 CloverRequestSubmitter::CloverRequestSubmitter(
     unsigned int max_concurrent_reqs,
-    std::vector<SharedRequestQueuePtr> req_queues,
+    const std::vector<SharedRequestQueuePtr>& req_queues,
     SharedResponseQueuePtr resp_queue, int thread_id)
     : max_concurrent_reqs_(max_concurrent_reqs),
       req_queue_ptrs_(req_queues),
@@ -163,4 +163,35 @@ unsigned int CloverRequestSubmitter::GetPending() {
     total += handler.GetPending();
   }
   return total;
+}
+
+std::vector<CloverResponse> BlockingSubmitWrite(
+    CloverRequestSubmitter& submitter, mitsume_key key, CloverRequestType op,
+    void* val, unsigned int len) {
+  std::vector<CloverResponse> acc_resps;
+  while (submitter.TrySubmitWrite(key, op, val, len) == kTooManyReqs) {
+    if (submitter.GetPending() == 0) {
+      throw std::runtime_error(
+          "No pending requests, but handler returns kTooManyReqs");
+    }
+    auto resps = submitter.GetResponses();
+    while (resps.empty()) {
+      resps = submitter.GetResponses();
+    }
+    acc_resps.insert(acc_resps.end(), resps.begin(), resps.end());
+  }
+  return acc_resps;
+}
+
+std::vector<CloverResponse> BlockUntilAllComplete(
+    CloverRequestSubmitter& submitter) {
+  std::vector<CloverResponse> acc_resps;
+  while (submitter.GetPending() > 0) {
+    auto resps = submitter.GetResponses();
+    while (resps.empty()) {
+      resps = submitter.GetResponses();
+    }
+    acc_resps.insert(acc_resps.end(), resps.begin(), resps.end());
+  }
+  return acc_resps;
 }

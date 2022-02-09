@@ -16,6 +16,7 @@
 #include "herd_main.h"
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
+#include "req_submitter.h"
 #include "util/lru_records.h"
 
 // The type of secondary KVS lookup table
@@ -29,63 +30,110 @@ DEFINE_int32(postlist, 1,
 
 DEFINE_bool(clover_blocking, false,
             "Wait for Clover request complete before continuing");
+DEFINE_uint32(clover_cncr, 128, "Max concurrent Clover requests");
 
 DEFINE_uint64(lru_size, 8192, "Size of LRU record");
 DEFINE_uint64(lru_window, 65536, "Size of LRU window");
 DEFINE_int32(lru_min_count, 4,
              "Minimum amount of appearance to be placed in LRU");
 
+struct CloverWriteRequestTiny {
+  mitsume_key key;
+  void *val;
+  CloverRequestType op;
+  mica_size_t len;
+
+  CloverWriteRequestTiny(mitsume_key k, void *v, CloverRequestType o,
+                         mica_size_t l)
+      : key(k), val(v), op(o), len(l) {
+    if (op != CloverRequestType::kInvalidate) {
+      CHECK_NOTNULL(val);
+      CHECK_GT(len, 0);
+    }
+  }
+};
+
 /**
- * @brief Adds a new Clover request into request buffer and updates the request
- * counter.
+ * @brief Adds a new Clover request into request buffer.
  *
  * If a request with same key exists in request buffer, that request is replaced
  * with the new one. Otherwise the new request is appended to the end of the
- * request buffer, and the request counter is incremented.
+ * request buffer.
  *
  * @param[in,out] reqs the request buffer
- * @param[in,out] req_cnt the request counter
- * @param[in] req the new request
+ * @param[in] key the key
+ * @param[in] val the value buffer
+ * @param[in] op CloverRequestType::kWrite | CloverRequestType::kInvalidate
+ * @param[in] len the value size
  */
-inline void AddNewCloverReq(std::vector<CloverRequest> &reqs,
-                            unsigned int &req_cnt, const CloverRequest &req) {
-  unsigned int req_idx = req_cnt;
-  // overwrite previous requests in current batch with the same key
-  for (unsigned int i = 0; i < req_cnt; i++) {
-    if (reqs[i].key == req.key) {
-      req_idx = i;
-      break;
+inline void AddNewCloverReq(std::vector<CloverWriteRequestTiny> &reqs,
+                            mitsume_key key, void *val, CloverRequestType op,
+                            mica_size_t len) {
+  for (auto &req : reqs) {
+    if (req.key == key) {
+      req.val = val;
+      req.op = op;
+      req.len = len;
+      return;
     }
   }
-  reqs[req_idx] = req;
-  if (req_idx == req_cnt) {
-    req_cnt++;
-  }
+  reqs.emplace_back(key, val, op, len);
 }
 
 /**
  * @brief Checks and reports errors found in Clover response buffer.
  *
- * @param resp Clover response buffer
- * @param n number of responses
+ * @param resps Clover response buffer
  * @return true if at least one error is found
  */
-inline bool CheckCloverError(CloverResponse *resp, int n) {
+inline bool CheckCloverError(const std::vector<CloverResponse> &resps) {
   bool found_error = false;
-  for (int i = 0; i < n; i++) {
-    if (resp[i].rc != MITSUME_SUCCESS) {
-      LOG(ERROR) << "Clover request " << resp[i].id
-                 << " failed, key=" << std::hex << resp[i].key << std::dec
-                 << ", op=" << static_cast<int>(resp[i].op)
-                 << ", rc=" << resp[i].rc;
+  for (auto &resp : resps) {
+    if (resp.rc != MITSUME_SUCCESS) {
+      LOG(ERROR) << "Clover request " << resp.id << " failed, key=" << std::hex
+                 << resp.key << std::dec << ", op=" << static_cast<int>(resp.op)
+                 << ", rc=" << resp.rc;
       found_error = true;
     }
   }
   return found_error;
 }
 
-void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
-                std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
+void SubmitCloverRequests(CloverRequestSubmitter &submitter,
+                          const std::vector<CloverWriteRequestTiny> &inserts,
+                          const std::vector<CloverWriteRequestTiny> &updates) {
+  if (!inserts.empty()) {
+    // Submit insertions before submitting writes and invalidations
+    for (auto &req : inserts) {
+      auto resps = BlockingSubmitWrite(
+          submitter, req.key, CloverRequestType::kInsert, req.val, req.len);
+      CHECK(!CheckCloverError(resps));
+    }
+    submitter.Flush();
+
+    // wait for insertion completes before writing values
+    {
+      auto resps = BlockUntilAllComplete(submitter);
+      CHECK(!CheckCloverError(resps));
+    }
+  }
+
+  for (auto &req : updates) {
+    auto resps =
+        BlockingSubmitWrite(submitter, req.key, req.op, req.val, req.len);
+    CHECK(!CheckCloverError(resps));
+  }
+
+  if (FLAGS_clover_blocking) {
+    submitter.Flush();
+    auto resps = BlockUntilAllComplete(submitter);
+    CHECK(!CheckCloverError(resps));
+  }
+}
+
+void WorkerMain(herd_thread_params herd_params,
+                const std::vector<SharedRequestQueuePtr> &req_queue_ptrs,
+                SharedResponseQueuePtr resp_queue_ptr) {
   int i, ret;
   int wrkr_lid = herd_params.id; /* Local ID of this worker thread*/
   int num_server_ports = herd_params.num_server_ports;
@@ -103,16 +151,11 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
   constexpr unsigned int lru_sample_freq = 256;
   // FIXME: a temporary workaround to prevent repeating insertion
   std::unordered_set<mitsume_key> inserted_keys;
-  // Request queue producer token for this worker thread
-  moodycamel::ProducerToken ptok(req_queue);
-  // Clover request buffer. Stores "Write" and "Invalidation" requests.
-  vector<CloverRequest> clover_req_buf(2 * MICA_MAX_BATCH_SIZE);
-  // Clover response buffer
-  CloverResponse clover_resp_buf[2 * MICA_MAX_BATCH_SIZE];
-  // Reply option for Clover write requests
-  CloverReplyOption write_reply_opt = FLAGS_clover_blocking
-                                          ? CloverReplyOption::kAlways
-                                          : CloverReplyOption::kNever;
+  CloverRequestSubmitter clover_submitter(FLAGS_clover_cncr, req_queue_ptrs,
+                                          resp_queue_ptr, wrkr_lid);
+  std::vector<CloverWriteRequestTiny> clover_insert_reqs;
+  // write and invalidation
+  std::vector<CloverWriteRequestTiny> clover_update_reqs;
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
@@ -258,8 +301,6 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
                 << ", rate: " << num_clover_inserts / seconds
                 << "/s. LRU eviction (Clover invalidation): "
                 << num_lru_eviction / seconds << "/s";
-      LOG_IF(INFO, wrkr_lid == 0) << "Approximated pending clover requests: "
-                                  << req_queue.size_approx();
 
       rolling_iter = 0;
       nb_tx_tot = 0;
@@ -360,7 +401,6 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
 
     mica_batch_op(&kv, wr_i, op_ptr_arr, resp_arr);
 
-    unsigned int clover_req_cnt = 0, clover_insert_req_cnt = 0;
     for (int i = 0; i < wr_i; i++) {
       // We've modified HERD to use 64-bit hash and place the hash result in
       // the second 8 bytes of mica_key.
@@ -376,50 +416,24 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
           if (contain_after) {
             if (inserted_keys.find(key) == inserted_keys.end()) {
               // Insert this key to Clover
-              CloverRequest req{
-                  key,                         // key
-                  resp_arr[i].val_ptr,         // buf
-                  resp_arr[i].val_len,         // len
-                  clover_insert_req_cnt,       // id
-                  CloverRequestType::kInsert,  // op
-                  wrkr_lid,                    // from
-                  CloverReplyOption::kAlways   // need_reply
-              };
-              while (!req_queue.try_enqueue(ptok, req))
-                ;
-              clover_insert_req_cnt++;
+              clover_insert_reqs.emplace_back(key, resp_arr[i].val_ptr,
+                                              CloverRequestType::kInsert,
+                                              resp_arr[i].val_len);
               inserted_keys.insert(key);
             } else if (!contain_before) {
               // re-validate the value
-              AddNewCloverReq(clover_req_buf, clover_req_cnt,
-                              CloverRequest{
-                                  key,                        // key
-                                  resp_arr[i].val_ptr,        // buf
-                                  resp_arr[i].val_len,        // len
-                                  clover_req_cnt,             // id
-                                  CloverRequestType::kWrite,  // op
-                                  wrkr_lid,                   // from
-                                  write_reply_opt             // reply_opt
-                              });
+              AddNewCloverReq(clover_update_reqs, key, resp_arr[i].val_ptr,
+                              CloverRequestType::kWrite, resp_arr[i].val_len);
             }
             // notify client that this key is available in Clover now
             wr[i].imm_data =
                 (HerdResponseCode::kOffloaded << 8) + op_ptr_arr[i]->seq;
-            DLOG(INFO) << "Add " << std::hex << key << std::dec << " to Clover";
           }
           if (evicted.has_value()) {
             /* FIXME: "delete" old keys instead of invalidate */
             // invalidate old keys. Buffer will be set in worker threads.
-            AddNewCloverReq(clover_req_buf, clover_req_cnt,
-                            CloverRequest{
-                                evicted.value(),                 // key
-                                nullptr,                         // buf
-                                0,                               // len
-                                clover_req_cnt,                  // id
-                                CloverRequestType::kInvalidate,  // op
-                                wrkr_lid,                        // from
-                                write_reply_opt                  // reply_opt
-                            });
+            AddNewCloverReq(clover_update_reqs, key, nullptr,
+                            CloverRequestType::kInvalidate, 0);
             num_lru_eviction++;
           }
         }
@@ -427,43 +441,18 @@ void WorkerMain(herd_thread_params herd_params, SharedRequestQueue &req_queue,
       } else if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
         if (lru.Contain(key) &&
             inserted_keys.find(key) != inserted_keys.end()) {
-          AddNewCloverReq(clover_req_buf, clover_req_cnt,
-                          CloverRequest{
-                              key,                        // key
-                              op_ptr_arr[i]->value,       // buf
-                              op_ptr_arr[i]->val_len,     // len
-                              clover_req_cnt,             // id
-                              CloverRequestType::kWrite,  // op
-                              wrkr_lid,                   // from
-                              write_reply_opt             // reply_opt
-                          });
+          AddNewCloverReq(clover_update_reqs, key, op_ptr_arr[i]->value,
+                          CloverRequestType::kWrite, op_ptr_arr[i]->val_len);
         }
       }
     }
 
-    // wait for insertion completes before writing values
-    unsigned int clover_comps = 0;
-    while (clover_comps < clover_insert_req_cnt) {
-      clover_comps += resp_queue_ptr->try_dequeue_bulk(
-          clover_resp_buf + clover_comps, clover_insert_req_cnt - clover_comps);
-    }
-    LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
-        << "Detect failed Clover insert, see above error message for details";
-
-    while (!req_queue.try_enqueue_bulk(
-        ptok, std::make_move_iterator(clover_req_buf.begin()), clover_req_cnt))
-      ;
-    if (FLAGS_clover_blocking) {
-      clover_comps = 0;
-      while (clover_comps < clover_req_cnt) {
-        clover_comps += resp_queue_ptr->try_dequeue_bulk(
-            clover_resp_buf + clover_comps, clover_req_cnt - clover_comps);
-      }
-      LOG_IF(FATAL, CheckCloverError(clover_resp_buf, clover_comps))
-          << "Detect failed Clover write, see above error message for details";
-    }
-    num_clover_updates += clover_req_cnt;
-    num_clover_inserts += clover_insert_req_cnt;
+    SubmitCloverRequests(clover_submitter, clover_insert_reqs,
+                         clover_update_reqs);
+    num_clover_inserts += clover_insert_reqs.size();
+    clover_insert_reqs.clear();
+    num_clover_updates += clover_update_reqs.size();
+    clover_update_reqs.clear();
 
     /*
      * Fill in the computed @val_ptr's. For non-postlist mode, this loop
@@ -536,14 +525,17 @@ int main(int argc, char *argv[]) {
   clover_node.Initialize();
   LOG(INFO) << "Done initializing clover compute node";
 
-  SharedRequestQueue clover_req_queue(2 * MICA_MAX_BATCH_SIZE, NUM_WORKERS, 0);
-  std::vector<std::shared_ptr<SharedResponseQueue>> clover_resp_queues;
+  // Turns out using one request queue has better performance
+  std::vector<SharedRequestQueuePtr> clover_req_queues;
+  clover_req_queues.push_back(std::make_shared<SharedRequestQueue>(
+      NUM_WORKERS * FLAGS_clover_cncr, NUM_WORKERS, 0));
+  std::vector<SharedResponseQueuePtr> clover_resp_queues;
   // using clover_resp_queues(NUM_WORKERS,
   // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
   // pointing to the same queue
   for (int i = 0; i < NUM_WORKERS; i++) {
     clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
-        2 * MICA_MAX_BATCH_SIZE, 0, FLAGS_clover_threads));
+        FLAGS_clover_threads * FLAGS_clover_cncr, 0, FLAGS_clover_threads));
   }
 
   std::vector<std::thread> threads;
@@ -555,14 +547,14 @@ int main(int argc, char *argv[]) {
         .num_client_ports = -1,   // does not matter for worker
         .update_percentage = 0U,  // does not matter for worker
         .postlist = FLAGS_postlist};
-    auto t = std::thread(WorkerMain, param, std::ref(clover_req_queue),
+    auto t = std::thread(WorkerMain, param, std::cref(clover_req_queues),
                          clover_resp_queues.at(i));
     threads.emplace_back(std::move(t));
   }
 
   for (int i = 0; i < FLAGS_clover_threads; i++) {
     auto t = std::thread(CloverThreadMain, std::ref(clover_node),
-                         std::ref(clover_req_queue),
+                         std::ref(*clover_req_queues.front()),
                          std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }

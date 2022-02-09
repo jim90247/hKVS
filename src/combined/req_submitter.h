@@ -70,7 +70,7 @@ class CloverRequestQueueHandler {
 class CloverRequestSubmitter {
  public:
   CloverRequestSubmitter(unsigned int max_concurrent_reqs,
-                         std::vector<SharedRequestQueuePtr> req_queues,
+                         const std::vector<SharedRequestQueuePtr>& req_queues,
                          SharedResponseQueuePtr resp_queue, int thread_id);
   CloverReqSubmitError TrySubmitRead(mitsume_key key);
   CloverReqSubmitError TrySubmitWrite(mitsume_key key, CloverRequestType op,
@@ -91,3 +91,10 @@ class CloverRequestSubmitter {
 
   unsigned int PickRequestQueue(mitsume_key key);
 };
+
+std::vector<CloverResponse> BlockingSubmitWrite(
+    CloverRequestSubmitter& submitter, mitsume_key key, CloverRequestType op,
+    void* val, unsigned int len);
+
+std::vector<CloverResponse> BlockUntilAllComplete(
+    CloverRequestSubmitter& submitter);
