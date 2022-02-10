@@ -3,17 +3,16 @@
 
 #include <chrono>
 #include <queue>
-#include <unordered_map>
 #include <vector>
 
 #include "util/lru_records.h"
 #include "util/zipfian_generator.h"
 
-DEFINE_uint64(lru_size, 8192UL, "Size of LRU record");
+DEFINE_uint64(lru_size, 100'000UL, "Size of LRU record");
 DEFINE_uint64(trace_size, 16UL << 20, "Length of trace");
 DEFINE_double(zipfian_alpha, 0.99, "Zipfian parameter");
 DEFINE_uint64(key_range, 8UL << 20, "Key range");
-DEFINE_uint64(window_size, 64UL << 10, "Time window size");
+DEFINE_uint64(window_size, 800'000UL, "Time window size");
 DEFINE_uint64(window_min_count, 4,
               "Minimum amount of appearance to be placed in cache");
 

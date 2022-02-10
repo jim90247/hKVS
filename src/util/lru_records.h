@@ -1,7 +1,8 @@
 #pragma once
+#include <folly/container/F14Map.h>
+
 #include <list>
 #include <optional>
-#include <unordered_map>
 #include <queue>
 
 template <typename Record>
@@ -55,7 +56,7 @@ class LruRecords {
 
  private:
   const size_t capacity_;
-  std::unordered_map<Record, ListIterator> map_;
+  folly::F14FastMap<Record, ListIterator> map_;
   std::list<Record> items_;
 };
 
@@ -106,7 +107,7 @@ class LruRecordsWithMinCount : public LruRecords<T> {
  private:
   const size_t window_size_;
   const int min_count_;
-  std::unordered_map<T, int> counts_;
+  folly::F14FastMap<T, int> counts_;
   std::queue<T> window_;
 
   void IncrementAppearance(const T &key) {
