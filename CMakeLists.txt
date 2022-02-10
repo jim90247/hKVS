@@ -17,6 +17,8 @@ if (NOT DEBUG)
   add_compile_definitions(NDEBUG)
 endif()
 
+# NOTE: enabling this flag will cause "pointer doesn't match" error when two
+# threads from different process can access same key.
 if (CLOVER_SPLIT_KEYS)
   add_compile_definitions(MITSUME_TOOL_FILTER_BY_THREAD)
 endif()
