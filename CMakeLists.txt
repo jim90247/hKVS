@@ -27,6 +27,11 @@ set(CMAKE_INSTALL_PREFIX ${PROJECT_SOURCE_DIR})
 
 include_directories(${PROJECT_SOURCE_DIR}/src)
 
+# Dependencies
+find_package(concurrentqueue REQUIRED) # cameron314/concurrentqueue
+find_package(Folly REQUIRED)
+find_package(Threads REQUIRED)
+
 add_subdirectory(src)
 add_subdirectory(exp)
 

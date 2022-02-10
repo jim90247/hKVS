@@ -1,6 +1,3 @@
-find_package(concurrentqueue REQUIRED)
-find_package(Folly REQUIRED)
-
 set(MITSUME_SRC
   ibsetup.cc
   ibsetup.h
