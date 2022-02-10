@@ -9,7 +9,7 @@
 using QueryHashMap =
     folly::ConcurrentHashMap<mitsume_key, mitsume_hash_struct *>;
 #else
-using QueryHashMap = std::unordered_map<mitsume_key, mitsume_hash_struct *>;
+using QueryHashMap = folly::F14FastMap<mitsume_key, mitsume_hash_struct *>;
 #endif
 
 class QueryHashMapAccessor {

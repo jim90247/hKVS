@@ -1,3 +1,4 @@
+#include <folly/container/F14Set.h>
 #include <getopt.h>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
@@ -7,7 +8,6 @@
 #include <queue>
 #include <set>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 #include "clover_worker.h"
@@ -109,7 +109,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   CloverRequestSubmitter submitter(FLAGS_clover_max_cncr * FLAGS_clover_batch,
                                    req_queues, resp_queue_ptr, local_id);
   // Stores which keys exist in Clover
-  std::unordered_set<mitsume_key> lookup_table;
+  folly::F14FastSet<mitsume_key> lookup_table;
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API

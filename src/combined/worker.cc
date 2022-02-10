@@ -1,3 +1,4 @@
+#include <folly/container/F14Set.h>
 #include <getopt.h>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
@@ -8,7 +9,6 @@
 #include <cstdlib>
 #include <mutex>
 #include <thread>
-#include <unordered_set>
 #include <vector>
 
 #include "clover_worker.h"
@@ -20,7 +20,7 @@
 #include "util/lru_records.h"
 
 // The type of secondary KVS lookup table
-using CloverLookupTable = std::unordered_set<mitsume_key>;
+using CloverLookupTable = folly::F14FastSet<mitsume_key>;
 
 DEFINE_int32(herd_server_ports, 1, "Number of server ports");
 // Base port index of HERD: the i-th available IB port (start from 0)
@@ -150,7 +150,7 @@ void WorkerMain(herd_thread_params herd_params,
   // Update LRU every lru_sample_freq read requests.
   constexpr unsigned int lru_sample_freq = 256;
   // FIXME: a temporary workaround to prevent repeating insertion
-  std::unordered_set<mitsume_key> inserted_keys;
+  folly::F14FastSet<mitsume_key> inserted_keys;
   CloverRequestSubmitter clover_submitter(FLAGS_clover_cncr, req_queue_ptrs,
                                           resp_queue_ptr, wrkr_lid);
   std::vector<CloverWriteRequestTiny> clover_insert_reqs;

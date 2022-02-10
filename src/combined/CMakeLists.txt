@@ -6,6 +6,7 @@ set(COMBINED_COMMON_LIB
   glog
   mitsume
   clover_wrapper
+  Folly::folly
 )
 
 add_library(combined_clover_worker clover_worker.h clover_worker.cc req_submitter.h req_submitter.cc)
