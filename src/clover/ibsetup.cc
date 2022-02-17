@@ -1,6 +1,8 @@
 #include "ibsetup.h"
 
 #include <folly/Random.h>
+#include <folly/logging/LogCategory.h>
+#include <folly/logging/xlog.h>
 
 #include <boost/stacktrace.hpp>
 
@@ -75,6 +77,9 @@ struct ibv_device *ib_get_device(struct ib_inf *inf, int port) {
                  device_attr.phys_port_cnt);
     if (ibv_query_port(ctx, port, &port_attr))
       die_printf("%s: can't query port %d\n", __func__, port);
+    XLOGF_IF(FATAL, port_attr.state != IBV_PORT_ACTIVE,
+             "Port state of {}:{} is not ACTIVE",
+             ibv_get_device_name(dev_list[i]), port);
     inf->device_id = i;
     inf->dev_port_id = port;
     return dev_list[i];
@@ -865,8 +870,7 @@ int userspace_one_read_sge(struct ib_inf *ib_ctx, uint64_t wr_id,
  * @param ib_ctx infiniband context
  * @param wr_id the work request id
  * @param remote_mr remote machine's memory region metadata
- * @return MITSUME_SUCCESS on success, MITSUME_TOO_MANY_POLLS when the work
- * completion does not appear after many ibv_poll_cq attempts
+ * @return MITSUME_SUCCESS
  */
 int userspace_one_poll(struct ib_inf *ib_ctx, uint64_t wr_id,
                        struct ib_mr_attr *remote_mr) {
@@ -911,10 +915,9 @@ int userspace_one_poll(struct ib_inf *ib_ctx, uint64_t wr_id,
     }
 
     if (++count == 100000) {
-      MITSUME_PRINT_ERROR("polling too many times %d %lu (qp_idx=%d)\n", count,
-                          wr_id, qp_idx);
+      XLOGF(ERR, "No response for {} after {} polls (qp_idx={})", wr_id, count,
+            qp_idx);
       std::cerr << boost::stacktrace::stacktrace() << std::endl;
-      return MITSUME_TOO_MANY_POLLS;
     }
   }
   return MITSUME_SUCCESS;

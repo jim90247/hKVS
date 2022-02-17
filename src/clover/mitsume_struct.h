@@ -31,8 +31,7 @@ typedef symmetric_coroutine<void>::yield_type coro_yield_t;
 
 enum MITSUME_notify {
   MITSUME_SUCCESS = 0,
-  MITSUME_ERROR = -1,
-  MITSUME_TOO_MANY_POLLS = -2
+  MITSUME_ERROR = -1
 };
 
 struct return_int {
