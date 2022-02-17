@@ -25,8 +25,7 @@ fi
 
 [ -f "${bindir}/combined_client" ] || abort_exec "Please install combined_client in ${bindir}"
 
-sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
-	numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
+numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
 	--herd_base_port_index 0 \
 	--herd_threads 8 \
 	--update_percentage 5 \

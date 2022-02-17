@@ -39,8 +39,7 @@ sleep 1
 show_message "Memcached server IP: $HRD_REGISTRY_IP"
 
 show_message "Starting master process"
-sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
-    numactl --cpunodebind=0 --membind=0 "${bindir}/herd" \
+numactl --cpunodebind=0 --membind=0 "${bindir}/herd" \
     --master 1 \
     --base-port-index 0 \
     --num-server-ports 1 &
@@ -50,8 +49,7 @@ sleep 1
 
 show_message "Starting workers"
 # `stdbuf --output=L` makes stdout line-buffered even when redirected to file using tee
-sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
-    stdbuf --output=L \
+stdbuf --output=L \
     numactl --cpunodebind=0 --membind=0 "${bindir}/combined_worker" \
     --herd_base_port_index 0 \
     --postlist 8 \
