@@ -32,8 +32,8 @@ DEFINE_bool(clover_blocking, false,
             "Wait for Clover request complete before continuing");
 DEFINE_uint32(clover_cncr, 128, "Max concurrent Clover requests");
 
-DEFINE_uint64(lru_size, 8192, "Size of LRU record");
-DEFINE_uint64(lru_window, 65536, "Size of LRU window");
+DEFINE_uint64(lru_size, 100'000, "Size of LRU record");
+DEFINE_uint64(lru_window, 800'000, "Size of LRU window");
 DEFINE_int32(lru_min_count, 4,
              "Minimum amount of appearance to be placed in LRU");
 
