@@ -12,7 +12,8 @@ function abort_exec() {
 
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
-export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
+
+source "$(dirname "$0")/export_local_settings.sh"
 
 [ -f "${bindir}/herd" ] || abort_exec "Please install herd in ${bindir}"
 [ -f "${bindir}/combined_worker" ] || abort_exec "Please install combined_worker in ${bindir}"
@@ -54,7 +55,7 @@ stdbuf --output=L \
     --herd_base_port_index 0 \
     --postlist 8 \
     --clover_machine_id 1 \
-    --clover_ib_dev 1 \
+    --clover_ib_dev $CLOVER_IB_DEV \
     --clover_ib_port 1 \
     --clover_cn 2 \
     --clover_dn 1 \

@@ -16,6 +16,8 @@ export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
 export MLX5_SINGLE_THREADED=1
 export MLX4_SINGLE_THREADED=1
 
+source "$(dirname "$0")/export_local_settings.sh"
+
 show_message "Memcached server IP: ${HRD_REGISTRY_IP}"
 if ! ping "$HRD_REGISTRY_IP" -c 1 >/dev/null; then
 	abort_exec "Memcached server is not reachable"
@@ -32,7 +34,7 @@ numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
 	--zipfian_alpha 0.99 \
 	--herd_machine_id "$1" \
 	--clover_machine_id $(($1 + 2)) \
-	--clover_ib_dev 1 \
+	--clover_ib_dev $CLOVER_IB_DEV \
 	--clover_ib_port 1 \
 	--clover_cn 2 \
 	--clover_dn 1 \
