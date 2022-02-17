@@ -340,7 +340,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
 
 int main(int argc, char* argv[]) {
   FLAGS_colorlogtostderr = true;
-  FLAGS_logtostderr = true;
+  FLAGS_alsologtostderr = true;
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
