@@ -1,4 +1,7 @@
 #include "mitsume_benchmark.h"
+
+#include <folly/logging/LogCategory.h>
+#include <folly/logging/xlog.h>
 #include <unistd.h>
 
 #define MITSUME_TARGET_KEY 10
@@ -20,6 +23,7 @@ void mitsume_test_read_ycsb(const char *input_string, int **op_key,
   uint64_t *key = new uint64_t[MITSUME_YCSB_SIZE];
   int *op = new int[MITSUME_YCSB_SIZE];
   FILE *fp = fopen(input_string, "r");
+  XLOGF_IF(FATAL, fp == nullptr, "Failed to open {}", input_string);
   ssize_t read;
   char *line = NULL;
   int i = 0;

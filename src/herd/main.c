@@ -8,7 +8,7 @@ int main(int argc, char* argv[]) {
   assert(HRD_Q_DEPTH == 128);
 
   /* All requests should fit into the master's request region */
-  assert(sizeof(struct mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+  assert(sizeof(struct mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <=
          RR_SIZE);
 
   /* Unsignaled completion checks. worker.c does its own check w/ @postlist */

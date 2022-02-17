@@ -66,7 +66,7 @@ struct herd_thread_params {
 static_assert(HRD_Q_DEPTH == 128);
 
 /* All requests should fit into the master's request region */
-static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <
+static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <=
               RR_SIZE);
 
 /* Unsignaled completion checks. worker.c does its own check w/ @postlist */
