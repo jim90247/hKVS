@@ -53,6 +53,9 @@ uint32_t mitsume_con_alloc_rr_get_controller_id(
  * return: return controller node id
  */
 uint32_t mitsume_con_alloc_gc_key_to_gc_thread(mitsume_key key) {
+  if constexpr (MITSUME_CLT_CONSUMER_GC_THREAD_NUMS == 0) {
+    return 0U;
+  }
   return key % MITSUME_CLT_CONSUMER_GC_THREAD_NUMS;
 }
 
