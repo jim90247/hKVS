@@ -153,6 +153,9 @@ int ConstructCloverRequests(mica_op **op_ptrs, const mica_resp *resps,
 
   int evictions = 0;
 
+  insert_reqs.clear();
+  update_reqs.clear();
+
   for (int i = 0; i < num; i++) {
     // We've modified HERD to use 64-bit hash and place the hash result in
     // the second 8 bytes of mica_key.
@@ -217,6 +220,7 @@ void WorkerMain(herd_thread_params herd_params,
   folly::F14FastSet<mitsume_key> inserted_keys;
   CloverRequestSubmitter clover_submitter(FLAGS_clover_cncr, req_queue_ptrs,
                                           resp_queue_ptr, wrkr_lid);
+  CloverTinyWriteReqs clover_inserts, clover_updates;
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
@@ -275,9 +279,6 @@ void WorkerMain(herd_thread_params herd_params,
         usleep(200000);
       }
     }
-
-    printf("main: Worker %d found client %d of %d clients. Client LID: %d\n",
-           wrkr_lid, i, NUM_CLIENTS, clt_qp[i]->lid);
 
     ibv_ah_attr ah_attr = {
         .dlid = static_cast<uint16_t>(clt_qp[i]->lid),
@@ -461,7 +462,6 @@ void WorkerMain(herd_thread_params herd_params,
 
     mica_batch_op(&kv, wr_i, op_ptr_arr, resp_arr);
 
-    CloverTinyWriteReqs clover_inserts, clover_updates;
     {
       int evicts = ConstructCloverRequests(op_ptr_arr, resp_arr, wr, wr_i,
                                            wrkr_lid, lru, inserted_keys,
