@@ -540,7 +540,7 @@ int main(int argc, char *argv[]) {
             << ", min count: " << FLAGS_lru_min_count;
 
   // Setup Clover compute node
-  CloverComputeNodeWrapper clover_node(NUM_WORKERS);
+  CloverComputeNodeWrapper clover_node(FLAGS_clover_threads);
   clover_node.Initialize();
   LOG(INFO) << "Done initializing clover compute node";
 
