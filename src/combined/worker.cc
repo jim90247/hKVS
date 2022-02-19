@@ -37,13 +37,13 @@ DEFINE_uint64(lru_window, 800'000, "Size of LRU window");
 DEFINE_int32(lru_min_count, 4,
              "Minimum amount of appearance to be placed in LRU");
 
-struct CloverWriteRequestTiny {
+struct CloverTinyWriteRequest {
   mitsume_key key;
   void *val;
   CloverRequestType op;
   mica_size_t len;
 
-  CloverWriteRequestTiny(mitsume_key k, void *v, CloverRequestType o,
+  CloverTinyWriteRequest(mitsume_key k, void *v, CloverRequestType o,
                          mica_size_t l)
       : key(k), val(v), op(o), len(l) {
     if (op != CloverRequestType::kInvalidate) {
@@ -52,6 +52,8 @@ struct CloverWriteRequestTiny {
     }
   }
 };
+
+using CloverTinyWriteReqs = std::vector<CloverTinyWriteRequest>;
 
 /**
  * @brief Adds a new Clover request into request buffer.
@@ -66,9 +68,8 @@ struct CloverWriteRequestTiny {
  * @param[in] op CloverRequestType::kWrite | CloverRequestType::kInvalidate
  * @param[in] len the value size
  */
-inline void AddNewCloverReq(std::vector<CloverWriteRequestTiny> &reqs,
-                            mitsume_key key, void *val, CloverRequestType op,
-                            mica_size_t len) {
+inline void AddNewCloverReq(CloverTinyWriteReqs &reqs, mitsume_key key,
+                            void *val, CloverRequestType op, mica_size_t len) {
   for (auto &req : reqs) {
     if (req.key == key) {
       req.val = val;
@@ -100,8 +101,8 @@ inline bool CheckCloverError(const std::vector<CloverResponse> &resps) {
 }
 
 void SubmitCloverRequests(CloverRequestSubmitter &submitter,
-                          const std::vector<CloverWriteRequestTiny> &inserts,
-                          const std::vector<CloverWriteRequestTiny> &updates) {
+                          const CloverTinyWriteReqs &inserts,
+                          const CloverTinyWriteReqs &updates) {
   if (!inserts.empty()) {
     // Submit insertions before submitting writes and invalidations
     for (auto &req : inserts) {
@@ -131,6 +132,73 @@ void SubmitCloverRequests(CloverRequestSubmitter &submitter,
   }
 }
 
+/**
+ * @brief Reads MICA response and construct corresponding Clover operations.
+ *
+ * For MICA_OP_GET, update the LRU and insert/remove keys to/from Clover.
+ * For MICA_OP_PUT, send a Clover write request to update latest data.
+ *
+ * @return number of evictions
+ */
+int ConstructCloverRequests(mica_op **op_ptrs, const mica_resp *resps,
+                            ibv_send_wr *wrs, int num, uint8_t wrkr_lid,
+                            LruRecordsWithMinCount<mitsume_key> &lru,
+                            CloverLookupTable &inserted_keys,
+                            CloverTinyWriteReqs &insert_reqs,
+                            CloverTinyWriteReqs &update_reqs) {
+  // Counter for sampling read requests.
+  thread_local static unsigned int lru_sample_cntr = 0;
+  // Update LRU every lru_sample_freq read requests.
+  constexpr unsigned int lru_sample_freq = 256;
+
+  int evictions = 0;
+
+  for (int i = 0; i < num; i++) {
+    // We've modified HERD to use 64-bit hash and place the hash result in
+    // the second 8 bytes of mica_key.
+    mitsume_key key = ConvertHerdKeyToCloverKey(&op_ptrs[i]->key, wrkr_lid);
+    if (op_ptrs[i]->opcode == MICA_OP_GET &&
+        resps[i].type == MICA_RESP_GET_SUCCESS) {
+      if (lru_sample_cntr == 0) {
+        bool contain_before = lru.Contain(key);
+        auto evicted = lru.Put(key);
+        bool contain_after = lru.Contain(key);
+
+        if (contain_after) {
+          if (inserted_keys.find(key) == inserted_keys.end()) {
+            // Insert this key to Clover
+            insert_reqs.emplace_back(key, resps[i].val_ptr,
+                                     CloverRequestType::kInsert,
+                                     resps[i].val_len);
+            inserted_keys.insert(key);
+          } else if (!contain_before) {
+            // re-validate the value
+            AddNewCloverReq(update_reqs, key, resps[i].val_ptr,
+                            CloverRequestType::kWrite, resps[i].val_len);
+          }
+          // notify client that this key is available in Clover now
+          wrs[i].imm_data =
+              (HerdResponseCode::kOffloaded << 8) + op_ptrs[i]->seq;
+        }
+        if (evicted.has_value()) {
+          /* FIXME: "delete" old keys instead of invalidate */
+          // invalidate old keys. Buffer will be set in worker threads.
+          AddNewCloverReq(update_reqs, key, nullptr,
+                          CloverRequestType::kInvalidate, 0);
+          evictions++;
+        }
+      }
+      HRD_MOD_ADD(lru_sample_cntr, lru_sample_freq);
+    } else if (op_ptrs[i]->opcode == MICA_OP_PUT) {
+      if (lru.Contain(key) && inserted_keys.find(key) != inserted_keys.end()) {
+        AddNewCloverReq(update_reqs, key, op_ptrs[i]->value,
+                        CloverRequestType::kWrite, op_ptrs[i]->val_len);
+      }
+    }
+  }
+  return evictions;
+}
+
 void WorkerMain(herd_thread_params herd_params,
                 const std::vector<SharedRequestQueuePtr> &req_queue_ptrs,
                 SharedResponseQueuePtr resp_queue_ptr) {
@@ -145,17 +213,10 @@ void WorkerMain(herd_thread_params herd_params,
   // insertion-eviction of less popular keys.
   LruRecordsWithMinCount<mitsume_key> lru(FLAGS_lru_size, FLAGS_lru_window,
                                           FLAGS_lru_min_count);
-  // Counter for sampling read requests.
-  unsigned int lru_sample_cntr = 0;
-  // Update LRU every lru_sample_freq read requests.
-  constexpr unsigned int lru_sample_freq = 256;
   // FIXME: a temporary workaround to prevent repeating insertion
   folly::F14FastSet<mitsume_key> inserted_keys;
   CloverRequestSubmitter clover_submitter(FLAGS_clover_cncr, req_queue_ptrs,
                                           resp_queue_ptr, wrkr_lid);
-  std::vector<CloverWriteRequestTiny> clover_insert_reqs;
-  // write and invalidation
-  std::vector<CloverWriteRequestTiny> clover_update_reqs;
 
   /* MICA instance id = wrkr_lid, NUMA node = 0 */
   mica_kv kv;
@@ -343,9 +404,8 @@ void WorkerMain(herd_thread_params herd_params,
 
       /* Convert to a MICA opcode */
       req_buf[req_offset].opcode -= HERD_MICA_OFFSET;
-      RAW_DCHECK(req_buf[req_offset].opcode == MICA_OP_GET ||
-                     req_buf[req_offset].opcode == MICA_OP_PUT,
-                 "Unknown MICA opcode");
+      CHECK(req_buf[req_offset].opcode == MICA_OP_GET ||
+            req_buf[req_offset].opcode == MICA_OP_PUT);
 
       op_ptr_arr[wr_i] = const_cast<mica_op *>(&req_buf[req_offset]);
 
@@ -401,58 +461,17 @@ void WorkerMain(herd_thread_params herd_params,
 
     mica_batch_op(&kv, wr_i, op_ptr_arr, resp_arr);
 
-    for (int i = 0; i < wr_i; i++) {
-      // We've modified HERD to use 64-bit hash and place the hash result in
-      // the second 8 bytes of mica_key.
-      mitsume_key key =
-          ConvertHerdKeyToCloverKey(&op_ptr_arr[i]->key, wrkr_lid);
-      if (op_ptr_arr[i]->opcode == MICA_OP_GET &&
-          resp_arr[i].type == MICA_RESP_GET_SUCCESS) {
-        if (lru_sample_cntr == 0) {
-          bool contain_before = lru.Contain(key);
-          auto evicted = lru.Put(key);
-          bool contain_after = lru.Contain(key);
-
-          if (contain_after) {
-            if (inserted_keys.find(key) == inserted_keys.end()) {
-              // Insert this key to Clover
-              clover_insert_reqs.emplace_back(key, resp_arr[i].val_ptr,
-                                              CloverRequestType::kInsert,
-                                              resp_arr[i].val_len);
-              inserted_keys.insert(key);
-            } else if (!contain_before) {
-              // re-validate the value
-              AddNewCloverReq(clover_update_reqs, key, resp_arr[i].val_ptr,
-                              CloverRequestType::kWrite, resp_arr[i].val_len);
-            }
-            // notify client that this key is available in Clover now
-            wr[i].imm_data =
-                (HerdResponseCode::kOffloaded << 8) + op_ptr_arr[i]->seq;
-          }
-          if (evicted.has_value()) {
-            /* FIXME: "delete" old keys instead of invalidate */
-            // invalidate old keys. Buffer will be set in worker threads.
-            AddNewCloverReq(clover_update_reqs, key, nullptr,
-                            CloverRequestType::kInvalidate, 0);
-            num_lru_eviction++;
-          }
-        }
-        HRD_MOD_ADD(lru_sample_cntr, lru_sample_freq);
-      } else if (op_ptr_arr[i]->opcode == MICA_OP_PUT) {
-        if (lru.Contain(key) &&
-            inserted_keys.find(key) != inserted_keys.end()) {
-          AddNewCloverReq(clover_update_reqs, key, op_ptr_arr[i]->value,
-                          CloverRequestType::kWrite, op_ptr_arr[i]->val_len);
-        }
-      }
+    CloverTinyWriteReqs clover_inserts, clover_updates;
+    {
+      int evicts = ConstructCloverRequests(op_ptr_arr, resp_arr, wr, wr_i,
+                                           wrkr_lid, lru, inserted_keys,
+                                           clover_inserts, clover_updates);
+      num_clover_inserts += clover_inserts.size();
+      num_clover_updates += clover_updates.size();
+      num_lru_eviction += evicts;
     }
 
-    SubmitCloverRequests(clover_submitter, clover_insert_reqs,
-                         clover_update_reqs);
-    num_clover_inserts += clover_insert_reqs.size();
-    clover_insert_reqs.clear();
-    num_clover_updates += clover_update_reqs.size();
-    clover_update_reqs.clear();
+    SubmitCloverRequests(clover_submitter, clover_inserts, clover_updates);
 
     /*
      * Fill in the computed @val_ptr's. For non-postlist mode, this loop

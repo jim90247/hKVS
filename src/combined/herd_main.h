@@ -43,6 +43,7 @@ constexpr int NUM_CLIENTS = 8;
 constexpr int WINDOW_SIZE = 32; /* Outstanding requests kept by each client */
 constexpr int NUM_UD_QPS = 1;   /* Number of UD QPs per port */
 constexpr int USE_POSTLIST = 1;
+static_assert(WINDOW_SIZE <= 256);  // fit in mica_op::seq
 
 constexpr int UNSIG_BATCH = 64; /* XXX Check if increasing this helps */
 constexpr int UNSIG_BATCH_ = UNSIG_BATCH - 1;
