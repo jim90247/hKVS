@@ -12,6 +12,7 @@ function abort_exec() {
 
 bindir="$(readlink -f "$(dirname "$0")/../../bin")"
 
+export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
 
 source "$(dirname "$0")/export_local_settings.sh"
 
