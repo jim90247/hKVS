@@ -4,6 +4,7 @@
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
 
+#include <boost/thread/barrier.hpp>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -48,8 +49,7 @@ DEFINE_double(
     zipfian_alpha, 0.99,
     "Zipfian distribution parameter (higher for more skewed distribution)");
 
-DEFINE_int64(bench_herd_iter, 20L << 20,
-             "Number of HERD reqs to perform per thread");
+DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
 
 /**
  * @brief Generates a key access trace based on Zipfian distribution. Key range:
@@ -91,7 +91,8 @@ void PostRecvWrs(ibv_qp* const qp, ibv_recv_wr* const wr) {
 /// HERD thread main function
 void HerdMain(herd_thread_params herd_params, int local_id,
               const std::vector<SharedRequestQueuePtr>& req_queues,
-              std::shared_ptr<SharedResponseQueue> resp_queue_ptr) {
+              std::shared_ptr<SharedResponseQueue> resp_queue_ptr,
+              boost::barrier& herd_barrier) {
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
@@ -110,6 +111,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
                                    req_queues, resp_queue_ptr, local_id);
   // Stores which keys exist in Clover
   folly::F14FastSet<mitsume_key> lookup_table;
+
+  // the Zipfian trace
+  auto trace = GenerateZipfianTrace(16UL << 20, clt_gid, HERD_NUM_KEYS);
 
   /*
    * TODO: The client creates a connected buffer because the libhrd API
@@ -148,9 +152,9 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   hrd_connect_qp(cb, 0, mstr_qp);
   hrd_wait_till_ready(mstr_qp_name);
 
+  herd_barrier.wait();
+
   /* Start the real work */
-  // the Zipfian trace
-  vector<int> trace = GenerateZipfianTrace(16UL << 20, clt_gid, HERD_NUM_KEYS);
   size_t key_i = 0;
   uint64_t seed = 0xdeadbeef;
   int ret;
@@ -227,10 +231,6 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       rolling_iter = 0;
       clover_comps = 0;
       clover_fails = 0;
-      if (nb_tx >= FLAGS_bench_herd_iter) {
-        LOG(INFO) << "Benchmark ends here";
-        exit(EXIT_SUCCESS);
-      }
 
       clock_gettime(CLOCK_REALTIME, &start);
     }
@@ -338,6 +338,15 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   }
 }
 
+void CountDownMain(boost::barrier& herd_barrier) {
+  herd_barrier.wait();
+  LOG(INFO) << "All local HERD threads are ready. Start countdown for "
+            << FLAGS_bench_secs << " seconds.";
+  std::this_thread::sleep_for(std::chrono::seconds(FLAGS_bench_secs));
+  LOG(INFO) << "Benchmark ends here";
+  exit(EXIT_SUCCESS);
+}
+
 int main(int argc, char* argv[]) {
   FLAGS_colorlogtostderr = true;
   FLAGS_alsologtostderr = true;
@@ -394,6 +403,9 @@ int main(int argc, char* argv[]) {
         FLAGS_clover_max_cncr * FLAGS_clover_batch, 0, FLAGS_clover_threads));
   }
 
+  // HERD threads and count down thread
+  boost::barrier herd_barrier(FLAGS_herd_threads + 1);
+
   std::vector<std::thread> threads;
   for (int i = 0; i < FLAGS_herd_threads; i++) {
     herd_thread_params param = {
@@ -405,7 +417,7 @@ int main(int argc, char* argv[]) {
         // Does not matter for clients. Client postlist = NUM_WORKERS
         .postlist = -1};
     auto t = std::thread(HerdMain, param, i, std::cref(clover_req_queues),
-                         clover_resp_queues.at(i));
+                         clover_resp_queues.at(i), std::ref(herd_barrier));
     threads.emplace_back(std::move(t));
   }
   for (int i = 0; i < FLAGS_clover_threads; i++) {
@@ -415,6 +427,7 @@ int main(int argc, char* argv[]) {
                     std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }
+  threads.emplace_back(CountDownMain, std::ref(herd_barrier));
 
   for (auto& t : threads) {
     t.join();

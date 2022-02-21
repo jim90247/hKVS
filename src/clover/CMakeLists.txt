@@ -36,7 +36,7 @@ set(MITSUME_SRC
 )
 
 add_library(mitsume ${MITSUME_SRC})
-target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi boost_system boost_coroutine boost_thread concurrentqueue::concurrentqueue Folly::folly)
+target_link_libraries(mitsume ibverbs rt Threads::Threads ${CMAKE_DL_LIBS} memcached numa papi Boost::system Boost::coroutine Boost::thread concurrentqueue::concurrentqueue Folly::folly)
 # set LTO
 # set_property(TARGET mitsume PROPERTY INTERPROCEDURAL_OPTIMIZATION True)
 
