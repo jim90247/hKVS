@@ -229,7 +229,7 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       clover_fails = 0;
       if (nb_tx >= FLAGS_bench_herd_iter) {
         LOG(INFO) << "Benchmark ends here";
-        return;
+        exit(EXIT_SUCCESS);
       }
 
       clock_gettime(CLOCK_REALTIME, &start);
