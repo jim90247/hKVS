@@ -19,15 +19,22 @@ source "$(dirname "$0")/export_local_settings.sh"
 [ -f "${bindir}/herd" ] || abort_exec "Please install herd in ${bindir}"
 [ -f "${bindir}/combined_worker" ] || abort_exec "Please install combined_worker in ${bindir}"
 
-server_threads=8
-worker_log=${1:-/tmp/worker.log}
+herd_workers=24
+clover_workers=20
+clover_gc=4
+show_message "Using $herd_workers HERD worker threads," \
+    "$clover_workers Clover consumer threads and" \
+    "$clover_gc Clover GC threads. Is it correct?"
+sleep 1
+
+worker_log=${1:-"/tmp/worker.log"}
 show_message "Saving a copy of worker log to ${worker_log}"
 
 show_message "Removing SHM key 24 (request region hugepages)"
 sudo ipcrm -M 24
 
 show_message "Removing SHM keys used by MICA"
-for i in $(seq 0 "$server_threads"); do
+for i in $(seq 0 "$herd_workers"); do
     key=$((3185 + i))
     sudo ipcrm -M $key 2>/dev/null
     key=$((4185 + i))
@@ -41,7 +48,7 @@ sleep 1
 show_message "Memcached server IP: $HRD_REGISTRY_IP"
 
 show_message "Starting master process"
-numactl --cpunodebind=0 --membind=0 "${bindir}/herd" \
+numactl --membind=0,1 "${bindir}/herd" \
     --master 1 \
     --base-port-index 0 \
     --num-server-ports 1 &
@@ -51,13 +58,19 @@ sleep 1
 
 show_message "Starting workers"
 # `stdbuf --output=L` makes stdout line-buffered even when redirected to file using tee
-stdbuf --output=L \
-    numactl --cpunodebind=0 --membind=0 "${bindir}/combined_worker" \
+# this numactl setting gives each non-trivial thread a core. Please ensure
+# SMT or Hyper-Threading is disabled so different logical core is mapped to
+# different physical core.
+numactl --physcpubind="0-$((herd_workers + clover_workers + clover_gc))" --membind=0,1 \
+    stdbuf --output=L \
+    "${bindir}/combined_worker" \
     --herd_base_port_index 0 \
-    --postlist 8 \
+    --postlist 32 \
     --clover_machine_id 1 \
     --clover_ib_dev $CLOVER_IB_DEV \
     --clover_ib_port 1 \
-    --clover_cn 2 \
+    --clover_cn 4 \
     --clover_dn 1 \
+    --clover_threads $clover_workers \
+    --clover_coros 4 \
     --clover_memcached_ip "$HRD_REGISTRY_IP" 2>&1 | tee "$worker_log" &

@@ -27,17 +27,17 @@ fi
 
 [ -f "${bindir}/combined_client" ] || abort_exec "Please install combined_client in ${bindir}"
 
-numactl --cpunodebind=0 --membind=0 "${bindir}/combined_client" \
+"${bindir}/combined_client" \
 	--herd_base_port_index 0 \
-	--herd_threads 8 \
-	--update_percentage 5 \
+	--herd_threads 24 \
+	--update_percentage 0 \
 	--zipfian_alpha 0.99 \
 	--herd_machine_id "$1" \
 	--clover_machine_id $(($1 + 2)) \
 	--clover_ib_dev $CLOVER_IB_DEV \
 	--clover_ib_port 1 \
-	--clover_cn 2 \
+	--clover_cn 4 \
 	--clover_dn 1 \
-	--clover_threads 8 \
+	--clover_threads 16 \
 	--clover_coros 4 \
 	--clover_memcached_ip "$HRD_REGISTRY_IP"
