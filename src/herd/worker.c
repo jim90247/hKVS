@@ -205,7 +205,7 @@ void* run_worker(void* arg) {
       wr[wr_i].opcode = IBV_WR_SEND_WITH_IMM;
       wr[wr_i].num_sge = 1;
       wr[wr_i].sg_list = &sgl[wr_i];
-      wr[wr_i].imm_data = wrkr_lid;
+      wr[wr_i].imm_data = op_ptr_arr[wr_i]->seq;
 
       wr[wr_i].send_flags =
           ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == 0) ? IBV_SEND_SIGNALED : 0;
