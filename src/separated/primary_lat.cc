@@ -20,10 +20,15 @@ unsigned long Rdtscp() {
 
 // Returns cycles per microseconds
 unsigned long MeasureClockFreq() {
+  static unsigned long freq = 0;
+  if (freq > 0) {
+    return freq;
+  }
   auto a = Rdtscp();
   std::this_thread::sleep_for(std::chrono::seconds(1));
   auto b = Rdtscp();
-  return (b - a) / 1'000'000;
+  freq = (b - a) / 1'000'000;
+  return freq;
 }
 
 std::vector<uint128> GenerateTrace() {
