@@ -152,7 +152,7 @@ bool HerdClient::PostRequest(uint128 mica_key, const char* value,
   wr.wr.rdma.rkey = master_qp_->rkey;
 
   int ret = ibv_post_send(cb_->conn_qp[0], &wr, &bad_wr);
-  XCHECK_EQ(ret, 0) << strerror(ret);
+  XLOGF_IF(FATAL, ret != 0, "ibv_post_send: {}", strerror(ret));
 
   pending_req_++;
   HRD_MOD_ADD(req_buf_idx_, req_buf_entries_);
