@@ -24,4 +24,17 @@ target_link_libraries(client_primary_lat
   zipfian
 )
 
-install(TARGETS client_primary_lat)
+add_executable(separated_client tput_client.cc ${COMMON_SRCS})
+target_link_libraries(separated_client
+  Boost::thread
+  Folly::folly
+  fmt::fmt
+  gflags
+  glog
+  mitsume
+  clover_wrapper
+  separated_herd_client
+  zipfian
+)
+
+install(TARGETS client_primary_lat separated_client)
