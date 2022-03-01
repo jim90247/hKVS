@@ -1,35 +1,15 @@
 #include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
-#include <x86intrin.h>
 
-#include <chrono>
-#include <thread>
 #include <vector>
 
 #include "herd_client.h"
+#include "timing.h"
 #include "util/zipfian_generator.h"
 
 DEFINE_int32(server_ports, 1, "Number of server IB ports");
 DEFINE_int32(client_ports, 1, "Number of client IB ports");
 DEFINE_int32(base_port_index, 0, "Base IB port index");
-
-unsigned long Rdtscp() {
-  unsigned int foo;
-  return __rdtscp(&foo);
-}
-
-// Returns cycles per microseconds
-unsigned long MeasureClockFreq() {
-  static unsigned long freq = 0;
-  if (freq > 0) {
-    return freq;
-  }
-  auto a = Rdtscp();
-  std::this_thread::sleep_for(std::chrono::seconds(1));
-  auto b = Rdtscp();
-  freq = (b - a) / 1'000'000;
-  return freq;
-}
 
 std::vector<uint128> GenerateTrace() {
   constexpr size_t kTraceLength = 2'000'000;
