@@ -13,7 +13,7 @@ DEFINE_int32(base_port_index, 0, "Base IB port index");
 
 std::vector<uint128> GenerateTrace() {
   constexpr size_t kTraceLength = 2'000'000;
-  ZipfianGenerator gen(8 << 20, 0.99);
+  ZipfianGenerator gen(HERD_NUM_KEYS, 0.99);
   std::vector<uint128> trace;
 
   for (size_t i = 0; i < kTraceLength; i++) {
