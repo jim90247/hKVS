@@ -109,6 +109,11 @@ void HerdClient::PostRecvWrs(const std::vector<unsigned int>& wr_id_list) {
 }
 
 bool HerdClient::PostRequest(uint128 mica_key, const char* value,
+                             unsigned int len, bool update) {
+  return PostRequest(mica_key, value, len, update, PickRemoteWorker(mica_key));
+}
+
+bool HerdClient::PostRequest(uint128 mica_key, const char* value,
                              unsigned int len, bool update,
                              unsigned int rem_worker) {
   if (pending_req_ == WINDOW_SIZE) {
