@@ -6,6 +6,9 @@ class HerdResp;
 
 class HerdClient {
  public:
+  static inline unsigned int PickRemoteWorker(const uint128 k) {
+    return k.second % NUM_WORKERS;
+  }
   HerdClient(int gcid, int server_ports, int client_ports, int base_port_index);
   void ConnectToServer();
   bool PostRequest(uint128 mica_key, const char* value, unsigned int len,
@@ -43,9 +46,6 @@ class HerdClient {
   ibv_sge recv_sges_[WINDOW_SIZE];
 
   void PostRecvWrs(const std::vector<unsigned int>& wr_id_list);
-  inline unsigned int PickRemoteWorker(const uint128 k) {
-    return k.second % NUM_WORKERS;
-  }
 };
 
 class HerdResp {
