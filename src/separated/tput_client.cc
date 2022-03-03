@@ -11,8 +11,8 @@
 
 #include "clover_wrapper/cn.h"
 #include "herd_client.h"
-#include "util/zipfian_generator.h"
 #include "util/affinity.h"
+#include "util/zipfian_generator.h"
 
 constexpr int kHerdServerPorts = 1;  // Number of server IB ports
 constexpr int kHerdClientPorts = 1;  // Number of client IB ports
@@ -86,9 +86,11 @@ void HerdMain(const int global_id, boost::barrier& barrier,
     bool update = (hrd_fastrand(&hrd_rand_seed) % 100U) < FLAGS_update_pct;
     while (!cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, update)) {
       cli.GetResponses(resps);
-      for (const auto& resp : resps) {
-        if (resp.Offloaded()) {
-          offloaded.insert(std::make_pair(resp.CloverKey(), true));
+      if (FLAGS_clover_threads > 0) {
+        for (const auto& resp : resps) {
+          if (resp.Offloaded()) {
+            offloaded.insert(std::make_pair(resp.CloverKey(), true));
+          }
         }
       }
     }
@@ -233,7 +235,7 @@ int main(int argc, char** argv) {
   if (FLAGS_pin_threads) {
     XLOG(INFO, "Pin benchmark threads to specific CPU core");
     unsigned int core = 0;
-    for (auto& t: threads) {
+    for (auto& t : threads) {
       SetAffinity(t, core++);
     }
   }
