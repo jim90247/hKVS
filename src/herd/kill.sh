@@ -1,5 +1,5 @@
 #!/bin/bash
 set -x
 
-pkill -2 main
+pkill main
 pkill -2 memcached
