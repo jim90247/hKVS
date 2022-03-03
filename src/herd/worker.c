@@ -1,6 +1,12 @@
+#define _DEFAULT_SOURCE
+#include <sys/shm.h>
+
 #include "hrd.h"
 #include "main.h"
 #include "mica.h"
+
+#define INLINE_CUTOFF \
+  (HRD_MAX_INLINE - (sizeof(struct mica_key) + MICA_OBJ_METADATA_SIZE))
 
 void* run_worker(void* arg) {
   int i, ret;
@@ -47,6 +53,19 @@ void* run_worker(void* arg) {
   assert(sid != -1);
   req_buf = shmat(sid, 0, 0);
   assert(req_buf != (void*)-1);
+
+  struct ibv_mr** mica_log_mrs = NULL;
+  if (HERD_VALUE_SIZE > INLINE_CUTOFF) {
+    mica_log_mrs = malloc(sizeof(struct ibv_mr*) * num_server_ports);
+    for (i = 0; i < num_server_ports; i++) {
+      mica_log_mrs[i] = ibv_reg_mr(cb[i]->pd, kv.ht_log, HERD_LOG_CAP, 0);
+      if (mica_log_mrs[i] == NULL) {
+        fputs("ibv_reg_mr returns NULL\n", stderr);
+        exit(EXIT_FAILURE);
+      }
+    }
+    printf("MICA log registered to PD, size=%u\n", HERD_LOG_CAP);
+  }
 
   /* Create an address handle for each client */
   struct ibv_ah* ah[NUM_CLIENTS];
@@ -205,14 +224,18 @@ void* run_worker(void* arg) {
       wr[wr_i].opcode = IBV_WR_SEND_WITH_IMM;
       wr[wr_i].num_sge = 1;
       wr[wr_i].sg_list = &sgl[wr_i];
-      wr[wr_i].imm_data = wrkr_lid;
+      wr[wr_i].imm_data = op_ptr_arr[wr_i]->seq;
 
       wr[wr_i].send_flags =
           ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == 0) ? IBV_SEND_SIGNALED : 0;
       if ((nb_tx[cb_i][ud_qp_i] & UNSIG_BATCH_) == UNSIG_BATCH_) {
         hrd_poll_cq(cb[cb_i]->dgram_send_cq[ud_qp_i], 1, &wc);
       }
-      wr[wr_i].send_flags |= IBV_SEND_INLINE;
+      if (HERD_VALUE_SIZE <= INLINE_CUTOFF) {
+        wr[wr_i].send_flags |= IBV_SEND_INLINE;
+      } else {
+        sgl[wr_i].lkey = mica_log_mrs[ud_qp_i]->lkey;
+      }
 
       HRD_MOD_ADD(ws[clt_i], WINDOW_SIZE);
 

@@ -1,6 +1,3 @@
-# cameron314/concurrentqueue
-find_package(concurrentqueue)
-
 set(COMBINED_COMMON_LIB
   gflags
   glog

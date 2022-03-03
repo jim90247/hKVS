@@ -32,6 +32,7 @@ find_package(concurrentqueue REQUIRED) # cameron314/concurrentqueue
 find_package(Folly REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED COMPONENTS coroutine system thread)
+find_package(fmt REQUIRED)
 
 add_subdirectory(src)
 add_subdirectory(exp)

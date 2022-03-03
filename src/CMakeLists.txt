@@ -11,3 +11,4 @@ add_subdirectory(clover_wrapper)
 add_subdirectory(util)
 
 add_subdirectory(combined)
+add_subdirectory(separated)

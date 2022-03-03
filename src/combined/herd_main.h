@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdint>
 
 #include "clover/mitsume_struct.h"
@@ -94,6 +96,20 @@ enum HerdResponseCode : unsigned int { kNormal = 0, kOffloaded = 1 };
  */
 inline mitsume_key ConvertHerdKeyToCloverKey(mica_key *herd_key, uint8_t tid) {
   mitsume_key clover_key = reinterpret_cast<uint64 *>(herd_key)[1];
+  clover_key &= ~((1UL << 8) - 1UL);  // mask out lowest 8 bits
+  return (clover_key | tid);
+}
+
+/**
+ * @brief Converts HERD key hash of specific worker thread to the key used in
+ * Clover by replacing the lowest 8 bits with the worker thread id.
+ *
+ * @param key the key used in HERD
+ * @param tid the id of HERD worker thread
+ * @return the corresponding key to query in Clover
+ */
+inline mitsume_key ConvertHerdKeyToCloverKey(const uint128 key, uint8_t tid) {
+  mitsume_key clover_key = key.second;
   clover_key &= ~((1UL << 8) - 1UL);  // mask out lowest 8 bits
   return (clover_key | tid);
 }
