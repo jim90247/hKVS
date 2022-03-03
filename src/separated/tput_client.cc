@@ -209,9 +209,13 @@ int main(int argc, char** argv) {
           "Using Clover GC threads at client-side is unnecessary.");
 
   CloverComputeNodeWrapper clvr_node(FLAGS_clover_threads);
-  clvr_node.Initialize();
-  XLOG(INFO, "Sleep 3 secs to wait Clover metadata server completes setup.");
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  if (FLAGS_clover_threads > 0) {
+    clvr_node.Initialize();
+    XLOG(INFO, "Sleep 3 secs to wait Clover metadata server completes setup.");
+    std::this_thread::sleep_for(std::chrono::seconds(3));
+  } else {
+    XLOG(INFO, "Skipping Clover client initialization.");
+  }
 
   boost::barrier barrier(FLAGS_herd_threads + FLAGS_clover_threads + 1);
   std::atomic_bool stop_flag = ATOMIC_VAR_INIT(false);
