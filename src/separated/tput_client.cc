@@ -12,6 +12,7 @@
 #include "clover_wrapper/cn.h"
 #include "herd_client.h"
 #include "util/zipfian_generator.h"
+#include "util/affinity.h"
 
 constexpr int kHerdServerPorts = 1;  // Number of server IB ports
 constexpr int kHerdClientPorts = 1;  // Number of client IB ports
@@ -28,6 +29,7 @@ DEFINE_uint32(herd_mach_id, 0, "HERD machine id");
 DEFINE_uint32(clover_threads, 16, "Number of Clover client threads");
 DEFINE_uint32(update_pct, 5, "Percentage of update operation");
 DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
+DEFINE_bool(pin_threads, false, "Pin each worker thread to one core");
 
 folly::ConcurrentHashMap<mitsume_key, bool> offloaded;
 
@@ -227,6 +229,13 @@ int main(int argc, char** argv) {
     clvr_tput_futs.push_back(prm.get_future());
     threads.emplace_back(CloverMain, std::ref(clvr_node), i, std::ref(barrier),
                          std::ref(stop_flag), std::move(prm));
+  }
+  if (FLAGS_pin_threads) {
+    XLOG(INFO, "Pin benchmark threads to specific CPU core");
+    unsigned int core = 0;
+    for (auto& t: threads) {
+      SetAffinity(t, core++);
+    }
   }
   threads.emplace_back(CountDownMain, std::ref(barrier), std::ref(stop_flag));
 

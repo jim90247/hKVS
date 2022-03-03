@@ -31,6 +31,7 @@ target_link_libraries(separated_client
   fmt::fmt
   gflags
   glog
+  affinity
   mitsume
   clover_wrapper
   separated_herd_client
