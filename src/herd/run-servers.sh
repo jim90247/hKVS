@@ -6,12 +6,14 @@ function blue() {
 	echo "${es}$1${ee}"
 }
 
-export HRD_REGISTRY_IP="192.168.223.1"
+export HRD_REGISTRY_IP=${HRD_REGISTRY_IP:-"192.168.223.1"}
+blue "HRD_REGISTRY_IP=${HRD_REGISTRY_IP}"
+
 export MLX5_SINGLE_THREADED=1
 export MLX4_SINGLE_THREADED=1
 
-server_threads=8
-worker_log=${1:-worker.log}
+server_threads=32
+worker_log=${1:-"/tmp/worker.log"}
 blue "Saving a copy of worker log to ${worker_log}"
 
 blue "Removing SHM key 24 (request region hugepages)"
@@ -26,13 +28,12 @@ for i in $(seq 0 "$server_threads"); do
 done
 
 blue "Reset server QP registry"
-sudo pkill memcached
-memcached -l 0.0.0.0 1>/dev/null 2>/dev/null &
+pkill -2 memcached
+memcached -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
 sleep 1
 
 blue "Starting master process"
-sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
-	numactl --cpunodebind=0 --membind=0 ./main \
+numactl --cpunodebind=0 --membind=0 ./main \
 	--master 1 \
 	--base-port-index 0 \
 	--num-server-ports 1 &
@@ -42,10 +43,9 @@ sleep 1
 
 blue "Starting worker threads"
 # `stdbuf --output=L` makes stdout line-buffered even when redirected to file using tee
-sudo LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-"$HOME/.local/lib"}" -E \
-	stdbuf --output=L \
-	numactl --cpunodebind=0 --membind=0 ./main \
+stdbuf --output=L \
+	numactl --membind=0 ./main \
 	--is-client 0 \
 	--base-port-index 0 \
 	--num-server-ports 1 \
-	--postlist 16 | tee "$worker_log" &
+	--postlist 32 | tee "$worker_log" &

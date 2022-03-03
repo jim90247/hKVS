@@ -20,7 +20,7 @@ source "$(dirname "$0")/export_local_settings.sh"
 [ -f "${bindir}/combined_worker" ] || abort_exec "Please install combined_worker in ${bindir}"
 
 herd_workers=24
-clover_workers=20
+clover_workers=24
 clover_gc=4
 show_message "Using $herd_workers HERD worker threads," \
     "$clover_workers Clover consumer threads and" \
