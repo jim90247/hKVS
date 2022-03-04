@@ -547,14 +547,14 @@ int main(int argc, char *argv[]) {
   // Turns out using one request queue has better performance
   std::vector<SharedRequestQueuePtr> clover_req_queues;
   clover_req_queues.push_back(std::make_shared<SharedRequestQueue>(
-      NUM_WORKERS * FLAGS_clover_cncr, NUM_WORKERS, 0));
+      2 * NUM_WORKERS * FLAGS_clover_cncr, NUM_WORKERS, 0));
   std::vector<SharedResponseQueuePtr> clover_resp_queues;
   // using clover_resp_queues(NUM_WORKERS,
   // std::make_shared<SharedResponseQueue>(...)) will create multiple pointers
   // pointing to the same queue
   for (int i = 0; i < NUM_WORKERS; i++) {
     clover_resp_queues.emplace_back(std::make_shared<SharedResponseQueue>(
-        FLAGS_clover_threads * FLAGS_clover_cncr, 0, FLAGS_clover_threads));
+        2 * FLAGS_clover_threads * FLAGS_clover_cncr, 0, FLAGS_clover_threads));
   }
 
   std::vector<std::thread> threads;
