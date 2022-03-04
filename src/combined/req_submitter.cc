@@ -89,11 +89,9 @@ void CloverRequestQueueHandler::Flush() {
   }
   req_buf_.back().reply_opt = CloverReplyOption::kAlways;
 
-  auto ok = req_queue_ptr_->try_enqueue_bulk(ptok_, req_buf_.begin(),
-                                             req_buf_.size());
-  if (!ok) {
-    throw std::runtime_error("try_enqueue failed");
-  }
+  while (!req_queue_ptr_->try_enqueue_bulk(ptok_, req_buf_.begin(),
+                                           req_buf_.size()))
+    ;
 
   auto& reclaim_list = reclaim_lists_[req_buf_.back().id];
   for (auto& req : req_buf_) {
