@@ -17,6 +17,7 @@
 #include "libhrd/hrd.h"
 #include "mica/mica.h"
 #include "req_submitter.h"
+#include "util/affinity.h"
 #include "util/lru_records.h"
 
 // The type of secondary KVS lookup table
@@ -576,6 +577,10 @@ int main(int argc, char *argv[]) {
                          std::ref(*clover_req_queues.front()),
                          std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
+  }
+
+  for (unsigned int i = 0; i < threads.size(); i++) {
+    SetAffinity(threads.at(i), i);
   }
 
   for (auto &t : threads) {

@@ -58,11 +58,7 @@ sleep 1
 
 show_message "Starting workers"
 # `stdbuf --output=L` makes stdout line-buffered even when redirected to file using tee
-# this numactl setting gives each non-trivial thread a core. Please ensure
-# SMT or Hyper-Threading is disabled so different logical core is mapped to
-# different physical core.
-numactl --physcpubind="0-$((herd_workers + clover_workers + clover_gc))" --membind=0,1 \
-    stdbuf --output=L \
+numactl --membind=0,1 stdbuf --output=L \
     "${bindir}/combined_worker" \
     --herd_base_port_index 0 \
     --postlist 32 \
