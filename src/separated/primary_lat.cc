@@ -10,6 +10,8 @@
 DEFINE_int32(server_ports, 1, "Number of server IB ports");
 DEFINE_int32(client_ports, 1, "Number of client IB ports");
 DEFINE_int32(base_port_index, 0, "Base IB port index");
+DEFINE_int32(global_cid, 0, "Global client id");
+DEFINE_bool(update, false, "Test update operation instead of read");
 
 std::vector<uint128> GenerateTrace() {
   constexpr size_t kTraceLength = 2'000'000;
@@ -84,6 +86,11 @@ void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
   XLOGF(INFO,
         "{} latency: avg={:.2f}, median={:.2f}, 99%={:.2f}, max={:.2f} (us).",
         update ? "update" : "read", avg, median, tail, max);
+
+  unsigned long cycle_per_sec = cycle_per_us * 1'000'000;
+  double tput =
+      kBenchmarkIter / (static_cast<double>(end - start) / cycle_per_sec);
+  XLOGF(INFO, "{:.2f} {}/s", tput, update ? "update" : "read");
 }
 
 void BenchmarkMain(HerdClient& cli) {
@@ -92,8 +99,7 @@ void BenchmarkMain(HerdClient& cli) {
   WarmUp(cli, trace);
   XLOG(INFO, "warm-up completed.");
 
-  BenchmarkOneOperation(cli, trace, true);
-  BenchmarkOneOperation(cli, trace, false);
+  BenchmarkOneOperation(cli, trace, FLAGS_update);
 }
 
 int main(int argc, char** argv) {
@@ -101,8 +107,7 @@ int main(int argc, char** argv) {
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
 
-  // check at runtime (instead of compile-time) to allow other codes to compile
-  XCHECK_EQ(NUM_CLIENTS, 1);
+  XLOGF(INFO, "Client id: {}", FLAGS_global_cid);
 
   {
     auto memcached_ip = std::getenv("HRD_REGISTRY_IP");
@@ -111,7 +116,7 @@ int main(int argc, char** argv) {
   }
   XLOGF(INFO, "Value size: {}", HERD_VALUE_SIZE);
 
-  HerdClient cli(0, FLAGS_server_ports, FLAGS_client_ports,
+  HerdClient cli(FLAGS_global_cid, FLAGS_server_ports, FLAGS_client_ports,
                  FLAGS_base_port_index);
   cli.ConnectToServer();
 
