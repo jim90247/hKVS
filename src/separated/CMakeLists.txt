@@ -20,6 +20,7 @@ target_link_libraries(client_primary_lat
   fmt::fmt
   gflags
   glog
+  affinity
   separated_herd_client
   zipfian
 )

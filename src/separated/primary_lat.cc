@@ -1,10 +1,13 @@
 #include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 
+#include <atomic>
+#include <boost/thread/barrier.hpp>
 #include <vector>
 
 #include "herd_client.h"
 #include "timing.h"
+#include "util/affinity.h"
 #include "util/zipfian_generator.h"
 
 DEFINE_int32(server_ports, 1, "Number of server IB ports");
@@ -12,6 +15,7 @@ DEFINE_int32(client_ports, 1, "Number of client IB ports");
 DEFINE_int32(base_port_index, 0, "Base IB port index");
 DEFINE_int32(global_cid, 0, "Global client id");
 DEFINE_bool(update, false, "Test update operation instead of read");
+DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
 
 std::vector<uint128> GenerateTrace() {
   constexpr size_t kTraceLength = 2'000'000;
@@ -37,18 +41,18 @@ void WarmUp(HerdClient& cli, const std::vector<uint128>& trace) {
   }
 }
 
-// Computes median, 99% percentile and max
-std::tuple<double, double, double> CalculateStatistics(
+// Computes average, median, 99% percentile and max
+std::tuple<double, double, double, double> CalculateStatistics(
     std::vector<double>& latencies) {
   std::sort(latencies.begin(), latencies.end());
   auto count = latencies.size();
-  return std::make_tuple(latencies[count / 2], latencies[count * 99 / 100],
+  double avg = std::accumulate(latencies.begin(), latencies.end(), 0.0) / count;
+  return std::make_tuple(avg, latencies[count / 2], latencies[count * 99 / 100],
                          latencies.back());
 }
 
 void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
-                           bool update) {
-  constexpr unsigned int kBenchmarkIter = 4'000'000;
+                           bool update, std::atomic_bool& stop_flag) {
   auto cycle_per_us = MeasureClockFreq();
   XLOGF(INFO, "Cycles per micro-second: {}.", cycle_per_us);
 
@@ -56,7 +60,7 @@ void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
   std::vector<HerdResp> resps;
   std::vector<double> latencies;
 
-  for (unsigned int i = 0; i < kBenchmarkIter; i++) {
+  while (!stop_flag.load(std::memory_order_acquire)) {
     auto start = Rdtscp();
     auto& key = trace[idx];
     cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, update,
@@ -69,37 +73,32 @@ void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
     HRD_MOD_ADD(idx, trace.size());
   }
 
-  // Measure average latency separately
-  idx = 0;
-  auto start = Rdtscp();
-  for (unsigned int i = 0; i < kBenchmarkIter; i++) {
-    auto& key = trace[idx];
-    cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, update,
-                    key.second % NUM_WORKERS);
-    cli.GetResponses(resps);
-    HRD_MOD_ADD(idx, trace.size());
-  }
-  auto end = Rdtscp();
-  double avg = static_cast<double>(end - start) / cycle_per_us / kBenchmarkIter;
-
-  auto [median, tail, max] = CalculateStatistics(latencies);
+  auto [avg, median, tail, max] = CalculateStatistics(latencies);
   XLOGF(INFO,
         "{} latency: avg={:.2f}, median={:.2f}, 99%={:.2f}, max={:.2f} (us).",
         update ? "update" : "read", avg, median, tail, max);
 
-  unsigned long cycle_per_sec = cycle_per_us * 1'000'000;
-  double tput =
-      kBenchmarkIter / (static_cast<double>(end - start) / cycle_per_sec);
+  double tput = 1e6 / avg;
   XLOGF(INFO, "{:.2f} {}/s", tput, update ? "update" : "read");
 }
 
-void BenchmarkMain(HerdClient& cli) {
+void BenchmarkMain(HerdClient& cli, boost::barrier& barrier,
+                   std::atomic_bool& stop_flag) {
   auto trace = GenerateTrace();
 
+  MeasureClockFreq();
   WarmUp(cli, trace);
   XLOG(INFO, "warm-up completed.");
+  barrier.wait();
 
-  BenchmarkOneOperation(cli, trace, FLAGS_update);
+  BenchmarkOneOperation(cli, trace, FLAGS_update, stop_flag);
+}
+
+void CountDownMain(boost::barrier& barrier, std::atomic_bool& stop_flag) {
+  barrier.wait();
+  XLOGF(INFO, "Start benchmarking for {} seconds.", FLAGS_bench_secs);
+  std::this_thread::sleep_for(std::chrono::seconds(FLAGS_bench_secs));
+  stop_flag.store(true, std::memory_order_release);
 }
 
 int main(int argc, char** argv) {
@@ -120,7 +119,18 @@ int main(int argc, char** argv) {
                  FLAGS_base_port_index);
   cli.ConnectToServer();
 
-  BenchmarkMain(cli);
+  boost::barrier barrier(2);
+  std::atomic_bool stop_flag = ATOMIC_VAR_INIT(false);
+  std::thread countdown_thread(CountDownMain, std::ref(barrier),
+                               std::ref(stop_flag));
+  std::thread bench_thread(BenchmarkMain, std::ref(cli), std::ref(barrier),
+                           std::ref(stop_flag));
+
+  SetAffinity(bench_thread, 0);
+  XLOG(INFO, "Pin benchmark thread to core 0.");
+
+  countdown_thread.join();
+  bench_thread.join();
 
   return 0;
 }
