@@ -54,7 +54,6 @@ std::tuple<double, double, double, double> CalculateStatistics(
 void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
                            bool update, std::atomic_bool& stop_flag) {
   auto cycle_per_us = MeasureClockFreq();
-  XLOGF(INFO, "Cycles per micro-second: {}.", cycle_per_us);
 
   unsigned int idx = 0;
   std::vector<HerdResp> resps;
@@ -86,7 +85,9 @@ void BenchmarkMain(HerdClient& cli, boost::barrier& barrier,
                    std::atomic_bool& stop_flag) {
   auto trace = GenerateTrace();
 
-  MeasureClockFreq();
+  auto cycle_per_us = MeasureClockFreq();
+  XLOGF(INFO, "Cycles per micro-second: {}.", cycle_per_us);
+
   WarmUp(cli, trace);
   XLOG(INFO, "warm-up completed.");
   barrier.wait();
