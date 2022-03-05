@@ -13,9 +13,12 @@
 DEFINE_int32(server_ports, 1, "Number of server IB ports");
 DEFINE_int32(client_ports, 1, "Number of client IB ports");
 DEFINE_int32(base_port_index, 0, "Base IB port index");
-DEFINE_int32(global_cid, 0, "Global client id");
+DEFINE_int32(gcid_offset, 0, "Global client id offset");
 DEFINE_bool(update, false, "Test update operation instead of read");
 DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
+DEFINE_uint32(threads, 1, "Number of threads to run benchmark");
+
+std::atomic_uint64_t total_tput = ATOMIC_VAR_INIT(0);
 
 std::vector<uint128> GenerateTrace() {
   constexpr size_t kTraceLength = 2'000'000;
@@ -51,9 +54,18 @@ std::tuple<double, double, double, double> CalculateStatistics(
                          latencies.back());
 }
 
-void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
-                           bool update, std::atomic_bool& stop_flag) {
+void BenchmarkMain(unsigned int gcid, boost::barrier& barrier,
+                   std::atomic_bool& stop_flag) {
+  auto trace = GenerateTrace();
   auto cycle_per_us = MeasureClockFreq();
+
+  HerdClient cli(gcid, FLAGS_server_ports, FLAGS_client_ports,
+                 FLAGS_base_port_index);
+  cli.ConnectToServer();
+
+  WarmUp(cli, trace);
+  XLOG(INFO, "warm-up completed.");
+  barrier.wait();
 
   unsigned int idx = 0;
   std::vector<HerdResp> resps;
@@ -62,7 +74,7 @@ void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
   while (!stop_flag.load(std::memory_order_acquire)) {
     auto start = Rdtscp();
     auto& key = trace[idx];
-    cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, update,
+    cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, FLAGS_update,
                     key.second % NUM_WORKERS);
     cli.GetResponses(resps);
     auto end = Rdtscp();
@@ -75,24 +87,10 @@ void BenchmarkOneOperation(HerdClient& cli, const std::vector<uint128>& trace,
   auto [avg, median, tail, max] = CalculateStatistics(latencies);
   XLOGF(INFO,
         "{} latency: avg={:.2f}, median={:.2f}, 99%={:.2f}, max={:.2f} (us).",
-        update ? "update" : "read", avg, median, tail, max);
+        FLAGS_update ? "update" : "read", avg, median, tail, max);
 
-  double tput = 1e6 / avg;
-  XLOGF(INFO, "{:.2f} {}/s", tput, update ? "update" : "read");
-}
-
-void BenchmarkMain(HerdClient& cli, boost::barrier& barrier,
-                   std::atomic_bool& stop_flag) {
-  auto trace = GenerateTrace();
-
-  auto cycle_per_us = MeasureClockFreq();
-  XLOGF(INFO, "Cycles per micro-second: {}.", cycle_per_us);
-
-  WarmUp(cli, trace);
-  XLOG(INFO, "warm-up completed.");
-  barrier.wait();
-
-  BenchmarkOneOperation(cli, trace, FLAGS_update, stop_flag);
+  unsigned long tput = 1e6 / avg;
+  total_tput.fetch_add(tput);
 }
 
 void CountDownMain(boost::barrier& barrier, std::atomic_bool& stop_flag) {
@@ -107,8 +105,6 @@ int main(int argc, char** argv) {
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
 
-  XLOGF(INFO, "Client id: {}", FLAGS_global_cid);
-
   {
     auto memcached_ip = std::getenv("HRD_REGISTRY_IP");
     XCHECK_NE(memcached_ip, nullptr);
@@ -116,22 +112,29 @@ int main(int argc, char** argv) {
   }
   XLOGF(INFO, "Value size: {}", HERD_VALUE_SIZE);
 
-  HerdClient cli(FLAGS_global_cid, FLAGS_server_ports, FLAGS_client_ports,
-                 FLAGS_base_port_index);
-  cli.ConnectToServer();
+  auto cycle_per_us = MeasureClockFreq();
+  XLOGF(INFO, "Cycles per micro-second: {}.", cycle_per_us);
 
-  boost::barrier barrier(2);
+  boost::barrier barrier(FLAGS_threads + 1);
   std::atomic_bool stop_flag = ATOMIC_VAR_INIT(false);
+
+  XLOG(INFO, "Pin benchmark threads to specific core.");
+  std::vector<std::thread> bench_threads;
+  for (unsigned int i = 0; i < FLAGS_threads; i++) {
+    bench_threads.emplace_back(BenchmarkMain, FLAGS_gcid_offset + i,
+                               std::ref(barrier), std::ref(stop_flag));
+    SetAffinity(bench_threads[i], i);
+  }
+
   std::thread countdown_thread(CountDownMain, std::ref(barrier),
                                std::ref(stop_flag));
-  std::thread bench_thread(BenchmarkMain, std::ref(cli), std::ref(barrier),
-                           std::ref(stop_flag));
-
-  SetAffinity(bench_thread, 0);
-  XLOG(INFO, "Pin benchmark thread to core 0.");
 
   countdown_thread.join();
-  bench_thread.join();
+  for (auto& t : bench_threads) {
+    t.join();
+  }
+
+  XLOGF(INFO, "{} {}/s", total_tput.load(), FLAGS_update ? "update" : "read");
 
   return 0;
 }
