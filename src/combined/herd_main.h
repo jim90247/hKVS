@@ -37,7 +37,7 @@ constexpr int HERD_PUT_REQ_SIZE = 16 + MICA_OBJ_METADATA_SIZE + HERD_VALUE_SIZE;
 
 /* Configuration options */
 constexpr int MAX_SERVER_PORTS = 4;
-constexpr int NUM_WORKERS = 24;
+constexpr int NUM_WORKERS = 32;
 /// Total number of HERD client threads.
 constexpr int NUM_CLIENTS = 72;
 

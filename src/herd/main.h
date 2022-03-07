@@ -30,7 +30,7 @@
 
 /* Configuration options */
 #define MAX_SERVER_PORTS 4
-#define NUM_WORKERS 24
+#define NUM_WORKERS 32
 #define NUM_CLIENTS 72
 
 /* Performance options */
