@@ -17,6 +17,7 @@ DEFINE_int32(gcid_offset, 0, "Global client id offset");
 DEFINE_bool(update, false, "Test update operation instead of read");
 DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
 DEFINE_uint32(threads, 1, "Number of threads to run benchmark");
+DEFINE_uint32(pin_offset, 0, "Offset of pinned CPU index");
 
 std::atomic_uint64_t total_tput = ATOMIC_VAR_INIT(0);
 
@@ -123,7 +124,7 @@ int main(int argc, char** argv) {
   for (unsigned int i = 0; i < FLAGS_threads; i++) {
     bench_threads.emplace_back(BenchmarkMain, FLAGS_gcid_offset + i,
                                std::ref(barrier), std::ref(stop_flag));
-    SetAffinity(bench_threads[i], i);
+    SetAffinity(bench_threads[i], FLAGS_pin_offset + i);
   }
 
   std::thread countdown_thread(CountDownMain, std::ref(barrier),
