@@ -33,4 +33,4 @@ stdbuf --output=L \
 	numactl --membind=0,1 ./echo_server \
 	--base-port-index 0 \
 	--num-server-ports 1 \
-	--postlist 24
+	--postlist 32
