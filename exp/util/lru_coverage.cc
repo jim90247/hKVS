@@ -40,9 +40,19 @@ int main(int argc, char** argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
   google::InstallFailureSignalHandler();
-  LruRecordsWithMinCount<int> cache(FLAGS_lru_size, FLAGS_window_size,
-                                    FLAGS_window_min_count);
-  // LruRecords<int> cache(FLAGS_lru_size);
+  LruRecordsWithMinCount<int64_t> cache(FLAGS_lru_size, FLAGS_window_size,
+                                        FLAGS_window_min_count);
+  // LruRecords<int64_t> cache(FLAGS_lru_size);
+
+  {
+    auto trace = GenerateZipfianTrace(123);
+    // The warmup requests per HERD worker thread under following settings:
+    // 3M requests per client, LRU sample rate = 1/256, 24 HERD worker threads,
+    // 72 HERD client threads
+    for (unsigned int i = 0; i < 35156; i++) {
+      cache.Put(trace.at(i));
+    }
+  }
 
   auto start = clock::now();
   auto trace = GenerateZipfianTrace(42);
@@ -78,5 +88,7 @@ int main(int argc, char** argv) {
   }
   LOG(INFO) << "Optimal static offload = "
             << static_cast<double>(hit) / FLAGS_trace_size;
+  LOG(INFO) << "Estimated memory usage = " << cache.EstimatedMemoryUsage()
+            << " bytes";
   return 0;
 }

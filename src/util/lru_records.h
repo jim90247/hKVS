@@ -54,6 +54,14 @@ class LruRecords {
     return map_.find(record) != map_.end();
   }
 
+  virtual inline size_t EstimatedMemoryUsage() const {
+    auto map_size =
+        static_cast<size_t>(map_.bucket_count() * map_.max_load_factor()) *
+        (sizeof(Record) + sizeof(ListIterator));
+    auto items_size = items_.size() * sizeof(Record);
+    return map_size + items_size;
+  }
+
  private:
   const size_t capacity_;
   folly::F14FastMap<Record, ListIterator> map_;
@@ -102,6 +110,14 @@ class LruRecordsWithMinCount : public LruRecords<T> {
     } else {
       return std::nullopt;
     }
+  }
+
+  virtual inline size_t EstimatedMemoryUsage() const override {
+    auto counts_size = static_cast<size_t>(counts_.bucket_count() *
+                                           counts_.max_load_factor()) *
+                       (sizeof(T) + sizeof(int));
+    auto window_size = window_.size() * sizeof(T);
+    return counts_size + window_size + LruRecords<T>::EstimatedMemoryUsage();
   }
 
  private:
