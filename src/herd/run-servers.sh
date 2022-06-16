@@ -29,7 +29,7 @@ done
 
 blue "Reset server QP registry"
 pkill -2 memcached
-memcached -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
+memcached -I 1024m -m 2048 -l "$HRD_REGISTRY_IP" 1>/dev/null 2>/dev/null &
 sleep 1
 
 blue "Starting master process"
