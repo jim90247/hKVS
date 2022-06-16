@@ -218,7 +218,7 @@ void WorkerMain(herd_thread_params herd_params,
   LruRecordsWithMinCount<mitsume_key> lru(FLAGS_lru_size, FLAGS_lru_window,
                                           FLAGS_lru_min_count);
   // FIXME: a temporary workaround to prevent repeating insertion
-  folly::F14FastSet<mitsume_key> inserted_keys;
+  CloverLookupTable inserted_keys;
   CloverRequestSubmitter clover_submitter(FLAGS_clover_cncr, req_queue_ptrs,
                                           resp_queue_ptr, wrkr_lid);
   CloverTinyWriteReqs clover_inserts, clover_updates;

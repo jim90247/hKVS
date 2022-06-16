@@ -90,7 +90,7 @@ constexpr int MITSUME_CON_ALLOCATOR_SLAB_SIZE_GRANULARITY = 64;
 extern int MITSUME_CLT_NUM;
 extern int MITSUME_MEM_NUM;
 
-constexpr int MITSUME_MAX_KEYS = 100000;
+constexpr int MITSUME_MAX_KEYS = 1'000'000;
 #define MITSUME_ENTRY_NUM (1024 * 16)
 #define MITSUME_MEMORY_PER_ALLOCATION_KB (1024 * 1024 * 4) // 4GB
 #define MITSUME_MEMORY_LH_CUT_MAX_UNIT (1024 * 32)
@@ -176,6 +176,6 @@ constexpr bool kAskEntryAsync = false;
 //#define MITSUME_WRITE_OPT_DISABLE_LOCAL_CACHE_UPDATE
 #define MITSUME_GC_SLEEP_TWO_RTT
 
-constexpr size_t kEstimatedCloverKeys = 100000UL;
+constexpr size_t kEstimatedCloverKeys = 1'000'000UL;
 
 #endif
