@@ -16,9 +16,9 @@ unsigned long long int MITSUME_PER_NODE_LH;
  */
 const static unsigned long long set_lhnum[MITSUME_CON_ALLOCATOR_SLAB_NUMBER] = {
     MIN_LH_IN_ONE_NODE / 100 * 20,
-    MIN_LH_IN_ONE_NODE / 100 * 20,
-    MIN_LH_IN_ONE_NODE / 100 * 20,
-    MIN_LH_IN_ONE_NODE / 100 * 20,
+    MIN_LH_IN_ONE_NODE / 100 * 60,
+    MIN_LH_IN_ONE_NODE / 100 * 60,
+    MIN_LH_IN_ONE_NODE / 100 * 60,
     MIN_LH_IN_ONE_NODE / 100 * 98,
     MIN_LH_IN_ONE_NODE / 100 * 98,
     MIN_LH_IN_ONE_NODE / 100 * 98,

@@ -23,8 +23,8 @@ constexpr int HERD_OP_PUT = MICA_OP_PUT + HERD_MICA_OFFSET;
 constexpr int HERD_NUM_BKTS = 2 * 1024 * 1024;
 constexpr int HERD_LOG_CAP = 1024 * 1024 * 1024;
 
-constexpr int HERD_NUM_KEYS = 8 * 1024 * 1024;
-constexpr int HERD_VALUE_SIZE = 32;
+constexpr int HERD_NUM_KEYS = 1 << 20;
+constexpr int HERD_VALUE_SIZE = 100;
 /// Send/write can be inlined if the value size does not exceed this value.
 constexpr int kInlineCutOff =
     HRD_MAX_INLINE - (sizeof(mica_key) + MICA_OBJ_METADATA_SIZE);
@@ -52,7 +52,7 @@ constexpr int UNSIG_BATCH_ = UNSIG_BATCH - 1;
 
 /* SHM key for the 1st request region created by master. ++ for other RRs.*/
 constexpr int MASTER_SHM_KEY = 24;
-constexpr int RR_SIZE = 16 * 1024 * 1024; /* Request region size */
+constexpr int RR_SIZE = 32 << 20; /* Request region size */
 constexpr int Offset(int wn, int cn, int ws) {
   return (wn * NUM_CLIENTS * WINDOW_SIZE) + (cn * WINDOW_SIZE) + ws;
 }
@@ -69,7 +69,7 @@ struct herd_thread_params {
 static_assert(HRD_Q_DEPTH == 128);
 
 /* All requests should fit into the master's request region */
-static_assert(sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE <=
+static_assert((sizeof(mica_op) * NUM_CLIENTS * NUM_WORKERS * WINDOW_SIZE) <=
               RR_SIZE);
 
 /* Unsignaled completion checks. worker.c does its own check w/ @postlist */

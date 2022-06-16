@@ -25,7 +25,7 @@
 
 typedef uint16_t mica_size_t;
 // Object size including 16-byte key, fixed-size metadata and value
-#define MICA_OBJ_SIZE 64
+#define MICA_OBJ_SIZE 128
 // op, seq, val_len
 #define MICA_OBJ_METADATA_SIZE \
   (sizeof(uint8_t) + sizeof(uint8_t) + sizeof(mica_size_t))
