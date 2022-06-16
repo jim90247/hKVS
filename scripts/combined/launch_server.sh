@@ -27,7 +27,7 @@ show_message "Using $herd_workers HERD worker threads," \
     "$clover_gc Clover GC threads. Is it correct?"
 sleep 1
 
-worker_log=${1:-"/tmp/worker.log"}
+worker_log="/tmp/worker.log"
 show_message "Saving a copy of worker log to ${worker_log}"
 
 show_message "Removing SHM key 24 (request region hugepages)"
@@ -69,4 +69,4 @@ numactl --membind=0,1 stdbuf --output=L \
     --clover_dn 1 \
     --clover_threads $clover_workers \
     --clover_coros 4 \
-    --clover_memcached_ip "$HRD_REGISTRY_IP" 2>&1 | tee "$worker_log" &
+    --clover_memcached_ip "$HRD_REGISTRY_IP" "$@" 2>&1 | tee "$worker_log" &
