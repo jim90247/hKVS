@@ -110,7 +110,7 @@ void mitsume_benchmark_slave_func(coro_yield_t &yield,
     // MITSUME_PRINT("process %d\n", coro_id);
     if (MITSUME_YCSB_VERIFY_LEVEL)
       memset(write, 0x31 + (item.key % 30), MITSUME_BENCHMARK_SIZE);
-    if (item.op == 0) {
+    if (item.op == 0 && !kDoWriteOnly) {
       ret = mitsume_tool_read(thread_metadata, item.key, read, &read_size,
                               MITSUME_TOOL_KVSTORE_READ, coro_id, yield);
       if (MITSUME_YCSB_VERIFY_LEVEL) {
@@ -342,7 +342,7 @@ void *mitsume_benchmark_ycsb(void *input_metadata) {
     key = (uint64_t)target_key[i];
     if (MITSUME_YCSB_VERIFY_LEVEL)
       memset(write, 0x31 + (key % 30), MITSUME_BENCHMARK_SIZE);
-    if (op_key[i] == 0) {
+    if (op_key[i] == 0 && !kDoWriteOnly) {
       mitsume_tool_read(thread_metadata, key, read, &read_size,
                         MITSUME_TOOL_KVSTORE_READ);
       if (MITSUME_YCSB_VERIFY_LEVEL)
