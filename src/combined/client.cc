@@ -4,7 +4,9 @@
 #include <glog/logging.h>
 #include <glog/raw_logging.h>
 
+#include <atomic>
 #include <boost/thread/barrier.hpp>
+#include <future>
 #include <numeric>
 #include <queue>
 #include <set>
@@ -92,7 +94,9 @@ void PostRecvWrs(ibv_qp* const qp, ibv_recv_wr* const wr) {
 void HerdMain(herd_thread_params herd_params, int local_id,
               const std::vector<SharedRequestQueuePtr>& req_queues,
               std::shared_ptr<SharedResponseQueue> resp_queue_ptr,
-              boost::barrier& herd_barrier) {
+              boost::barrier& herd_barrier, std::atomic_bool& stop_flag,
+              std::promise<uint64_t> tput_hrd_prm,
+              std::promise<uint64_t> tput_clv_prm) {
   int clt_gid = herd_params.id; /* Global ID of this client thread */
   int num_client_ports = herd_params.num_client_ports;
   int num_server_ports = herd_params.num_server_ports;
@@ -152,8 +156,6 @@ void HerdMain(herd_thread_params herd_params, int local_id,
   hrd_connect_qp(cb, 0, mstr_qp);
   hrd_wait_till_ready(mstr_qp_name);
 
-  herd_barrier.wait();
-
   /* Start the real work */
   size_t key_i = 0;
   uint64_t seed = 0xdeadbeef;
@@ -203,38 +205,20 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     recv_wr[i].num_sge = 1;
   }
 
-  long long rolling_iter = 0; /* For throughput measurement */
-  long long nb_tx = 0;        /* Total requests performed or queued */
-  int wn = 0;                 /* Worker number */
+  long long nb_tx = 0; /* Total requests performed or queued */
+  int wn = 0;          /* Worker number */
 
-  // Completed Clover requests (reset periodically) (for perf measurement)
-  long clover_comps = 0;
-  // Failed Clover requests (reset periodically) (for perf measurement)
-  long clover_fails = 0;
-
-  struct timespec start, end;
-  clock_gettime(CLOCK_REALTIME, &start);
+  // Completed Clover requests (for throughput measurement)
+  uint64_t clover_comps = 0;
+  // Failed Clover requests (for throughput measurement)
+  uint64_t clover_fails = 0;
 
   /* Fill the RECV queue */
   PostRecvWrs(cb->dgram_qp[0], recv_wr);
 
-  constexpr long kMaxRollingIter = M_1;
-  while (1) {
-    if (rolling_iter >= kMaxRollingIter) {
-      clock_gettime(CLOCK_REALTIME, &end);
-      double sec = (end.tv_sec - start.tv_sec) +
-                   (double)(end.tv_nsec - start.tv_nsec) / 1000000000;
-      LOG(INFO) << "Worker " << clt_gid << ", HERD: " << rolling_iter / sec
-                << "/s, Clover completed: " << clover_comps / sec
-                << "/s, failures: " << clover_fails / sec << "/s";
+  herd_barrier.wait();
 
-      rolling_iter = 0;
-      clover_comps = 0;
-      clover_fails = 0;
-
-      clock_gettime(CLOCK_REALTIME, &start);
-    }
-
+  while (!stop_flag.load(std::memory_order_acquire)) {
     if (nb_tx % WINDOW_SIZE == 0 && nb_tx > 0) {
       hrd_poll_cq(cb->dgram_recv_cq[0], WINDOW_SIZE, wc);
 
@@ -256,11 +240,11 @@ void HerdMain(herd_thread_params herd_params, int local_id,
       PostRecvWrs(cb->dgram_qp[0], recv_wr);
     }
 
-    wn = hrd_fastrand(&seed) % NUM_WORKERS; /* Choose a worker */
     bool is_update = hrd_fastrand(&seed) % 100U < update_percentage;
 
     /* Forge the HERD request */
     int key = trace.at(key_i);
+    wn = key % NUM_WORKERS;  // pick worker based on key
     key_i = key_i < trace.size() - 1 ? key_i + 1 : 0;
 
     if (!is_update && FLAGS_clover_threads > 0) {
@@ -332,19 +316,24 @@ void HerdMain(herd_thread_params herd_params, int local_id,
     RAW_CHECK(ret == 0, strerror(ret));
     // printf("Client %d: sending request index %lld\n", clt_gid, nb_tx);
 
-    rolling_iter++;
     nb_tx++;
     HRD_MOD_ADD(ws[wn], WINDOW_SIZE);
   }
+
+  uint64_t tput_hrd = nb_tx / FLAGS_bench_secs,
+           tput_clv = clover_comps / FLAGS_bench_secs;
+  LOG(INFO) << "Worker " << clt_gid << " HERD: " << tput_hrd
+            << " op/s, Clover: " << tput_clv << " op/s";
+  tput_hrd_prm.set_value(tput_hrd);
+  tput_clv_prm.set_value(tput_clv);
 }
 
-void CountDownMain(boost::barrier& herd_barrier) {
+void CountDownMain(boost::barrier& herd_barrier, std::atomic_bool& stop_flag) {
   herd_barrier.wait();
   LOG(INFO) << "All local HERD threads are ready. Start countdown for "
             << FLAGS_bench_secs << " seconds.";
   std::this_thread::sleep_for(std::chrono::seconds(FLAGS_bench_secs));
-  LOG(INFO) << "Benchmark ends here";
-  exit(EXIT_SUCCESS);
+  stop_flag.store(true, std::memory_order_release);
 }
 
 int main(int argc, char* argv[]) {
@@ -405,8 +394,10 @@ int main(int argc, char* argv[]) {
 
   // HERD threads and count down thread
   boost::barrier herd_barrier(FLAGS_herd_threads + 1);
-
+  std::atomic_bool stop_flag = ATOMIC_VAR_INIT(false);
+  std::vector<std::future<uint64_t>> tput_hrd_futs, tput_clv_futs;
   std::vector<std::thread> threads;
+
   for (int i = 0; i < FLAGS_herd_threads; i++) {
     herd_thread_params param = {
         .id = (FLAGS_herd_machine_id * FLAGS_herd_threads) + i,
@@ -416,8 +407,15 @@ int main(int argc, char* argv[]) {
         .update_percentage = FLAGS_update_percentage,
         // Does not matter for clients. Client postlist = NUM_WORKERS
         .postlist = -1};
+
+    std::promise<uint64_t> prm_hrd, prm_clv;
+    tput_hrd_futs.push_back(prm_hrd.get_future());
+    tput_clv_futs.push_back(prm_clv.get_future());
+
     auto t = std::thread(HerdMain, param, i, std::cref(clover_req_queues),
-                         clover_resp_queues.at(i), std::ref(herd_barrier));
+                         clover_resp_queues.at(i), std::ref(herd_barrier),
+                         std::ref(stop_flag), std::move(prm_hrd),
+                         std::move(prm_clv));
     threads.emplace_back(std::move(t));
   }
   for (int i = 0; i < FLAGS_clover_threads; i++) {
@@ -427,8 +425,19 @@ int main(int argc, char* argv[]) {
                     std::cref(clover_resp_queues), i);
     threads.emplace_back(std::move(t));
   }
-  threads.emplace_back(CountDownMain, std::ref(herd_barrier));
+  threads.emplace_back(CountDownMain, std::ref(herd_barrier),
+                       std::ref(stop_flag));
 
+  unsigned long hrd_tput = 0, clv_tput = 0;
+  for (auto& fut : tput_hrd_futs) {
+    hrd_tput += fut.get();
+  }
+  for (auto& fut : tput_clv_futs) {
+    clv_tput += fut.get();
+  }
+  LOG(INFO) << "HERD: " << hrd_tput << " op/s, Clover: " << clv_tput << " op/s";
+
+  exit(EXIT_SUCCESS);
   for (auto& t : threads) {
     t.join();
   }
