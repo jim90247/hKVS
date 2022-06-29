@@ -22,7 +22,6 @@ constexpr int kCloverCoros = 4;
 
 constexpr unsigned int kTraceLength = 10'000'000;
 constexpr double kZipfianAlpha = 0.99;
-constexpr unsigned int kHerdWarmUpIter = 3'000'000;
 
 DEFINE_uint32(herd_threads, 24, "Number of HERD client threads");
 DEFINE_uint32(herd_mach_id, 0, "HERD machine id");
@@ -30,6 +29,7 @@ DEFINE_uint32(clover_threads, 16, "Number of Clover client threads");
 DEFINE_uint32(update_pct, 5, "Percentage of update operation");
 DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
 DEFINE_bool(pin_threads, false, "Pin each worker thread to one core");
+DEFINE_uint32(warmup, 10'000'000, "Total warm-up iterations");
 
 folly::ConcurrentHashMap<mitsume_key, bool> offloaded;
 
@@ -47,7 +47,8 @@ static std::vector<uint128> GenerateTrace(int seed) {
 void HerdWarmUp(HerdClient& cli, const std::vector<uint128>& trace) {
   std::vector<HerdResp> resps;
   unsigned int trace_idx = 0;
-  for (unsigned int i = 0; i < kHerdWarmUpIter; i++) {
+  // distribute warm-up iterations evenly across all threads
+  for (unsigned int i = 0; i < FLAGS_warmup / FLAGS_herd_threads; i++) {
     auto key = trace[trace_idx];
     while (!cli.PostRequest(key, nullptr, HERD_VALUE_SIZE, false)) {
       cli.GetResponses(resps);

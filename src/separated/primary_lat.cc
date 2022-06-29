@@ -18,6 +18,7 @@ DEFINE_bool(update, false, "Test update operation instead of read");
 DEFINE_uint32(bench_secs, 40, "Seconds to run benchmark");
 DEFINE_uint32(threads, 1, "Number of threads to run benchmark");
 DEFINE_uint32(pin_offset, 0, "Offset of pinned CPU index");
+DEFINE_uint32(warmup, 1'000'000, "Total warm-up iterations");
 
 std::atomic_uint64_t total_tput = ATOMIC_VAR_INIT(0);
 
@@ -34,10 +35,9 @@ std::vector<uint128> GenerateTrace() {
 }
 
 void WarmUp(HerdClient& cli, const std::vector<uint128>& trace) {
-  constexpr unsigned int kWarmUpIters = 1'000'000;
-
   std::vector<HerdResp> resps;
-  for (unsigned int i = 0; i < kWarmUpIters; i++) {
+  // distribute warm-up iterations evenly across all threads
+  for (unsigned int i = 0; i < FLAGS_warmup / FLAGS_threads; i++) {
     auto key = trace[i % trace.size()];
     while (!cli.PostRequest(key, nullptr, 0, false, key.second % NUM_WORKERS)) {
       cli.GetResponses(resps);
